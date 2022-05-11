@@ -143,7 +143,7 @@ def get_user_encoder():
     return sentEncodert
 
 
-def get_model(lr,delta,title_word_embedding_matrix):
+def get_model(lr,delta,title_word_embedding_matrix,optimizer_name='sgd'):
     doc_encoder = get_doc_encoder()
     user_encoder = get_user_encoder()
     
@@ -161,11 +161,18 @@ def get_model(lr,delta,title_word_embedding_matrix):
     user_vec = user_encoder(click_vecs)
     
     scores = keras.layers.Dot(axes=-1)([user_vec,can_vecs]) #(batch_size,1+1,) 
-    logits = keras.layers.Activation(keras.activations.softmax,name = 'recommend')(scores)     
+    logits = keras.layers.Activation(keras.activations.softmax, name='recommend')(scores)     
     
+    optimizer = None
+    if optimizer_name == 'sgd':
+        optimizer = SGD(lr=lr, clipvalue=delta)
+    elif optimizer_name == 'adam':
+        optimizer = Adam(lr=lr, clipvalue=delta)
+    assert optimizer
+
     model = Model([can_title,click_title],logits) # max prob_click_positive
     model.compile(loss=['categorical_crossentropy'],
-                  optimizer=SGD(lr=lr,clipvalue = delta), 
+                  optimizer=optimizer, 
                   metrics=['acc'])
     
     news_input = Input(shape=(30,),dtype='int32')
