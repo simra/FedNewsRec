@@ -63,13 +63,23 @@ class DocEncoder(nn.Module):
         )
     
     def forward(self, x):
+        # print('phase1: ', x.dtype)
         l_cnnt = self.phase1(x)
-        print('doc_encoder:phase1',l_cnnt.shape)
+        # print('doc_encoder:phase1',l_cnnt.shape)
         l_cnnt, attention_weights = self.attention(l_cnnt, l_cnnt, l_cnnt)
-        print('doc_encoder:attention', l_cnnt.shape)
+        # print('doc_encoder:attention', l_cnnt.shape)
         result = self.phase2(l_cnnt)
-        print('doc_encoder:phase2', result.shape)
+        # print('doc_encoder:phase2', result.shape)
         return result
+
+    def get_weights(self):
+        return [p.detach().clone() for p in self.parameters()]
+    
+    def set_weights(self, weights, do_grad=False):
+        for p,w in zip(self.parameters(), weights):
+            p.data = w.data
+            if do_grad:
+                p.grad = w.grad
 
 
 class VecTail(nn.Module):
@@ -78,7 +88,7 @@ class VecTail(nn.Module):
         self.n = n
 
     def forward(self, x):
-        return x[:,-self.n:,:]
+        return x[:, -self.n:, :]
 
 class UserEncoder(nn.Module):
     def __init__(self):        
@@ -102,18 +112,18 @@ class UserEncoder(nn.Module):
         #vec1 = self.gru(gru_input)
         #vecs2 = self.attention(*[news_vecs]*3)
         #vec2 = self.pool(vecs2)
-        print('news_vecs_input', news_vecs_input.shape)
+        #print('news_vecs_input', news_vecs_input.shape)
         user_vecs2, _u_weights = self.attention2(*[news_vecs_input]*3)
         user_vecs2 = self.dropout2(user_vecs2)
         user_vec2 = self.pool2(user_vecs2)
-        print('pool2_user_vec2', user_vec2.shape)
+        #print('pool2_user_vec2', user_vec2.shape)
         #user_vec2 = keras.layers.Reshape((1,400))(user_vec2)
         #user_vec2 = user_vec2.unsqueeze(1)
 
         user_vecs1 = self.tail2(news_vecs_input)
-        print('tail2_user_vecs1', user_vecs1.shape)
+        #print('tail2_user_vecs1', user_vecs1.shape)
         user_vec1, _u_hidden = self.gru2(user_vecs1)
-        print('gru2_user_vec1', user_vec1.shape)
+        #print('gru2_user_vec1', user_vec1.shape)
         user_vec1 = user_vec1[:, -1, :]
         #user_vec1 = keras.layers.Reshape((1,400))(user_vec1)
         #user_vec1 = user_vec1.unsqueeze(1)
@@ -123,7 +133,17 @@ class UserEncoder(nn.Module):
         vec = self.pool3(user_vecs)
         print(vec.shape)
         return vec
-        
+
+    def get_weights(self):
+        return [p.detach().clone() for p in self.parameters()]
+    
+    def set_weights(self, weights, do_grad=False):
+        for p,w in zip(self.parameters(), weights):
+            p.data = w.data
+            if do_grad:
+                p.grad = w.grad
+
+
 class TimeDistributed(nn.Module):    
     def __init__(self, module): #, batch_first=False):
         super(TimeDistributed, self).__init__()
@@ -131,7 +151,7 @@ class TimeDistributed(nn.Module):
         # self.batch_first = batch_first
 
     def forward(self, x):
-        print('TimeDist_x',x.size())
+        #print('TimeDist_x',x.size())
         if len(x.size()) <= 2:
             return self.module(x)
 
@@ -140,7 +160,7 @@ class TimeDistributed(nn.Module):
           output_t = self.module(x[:, i, :, :])
           output_t  = output_t.unsqueeze(1)
           output = torch.cat((output, output_t ), 1)
-        print('TimeDist_output', output.size())
+        #print('TimeDist_output', output.size())
         return output
         # # Squash samples and timesteps into a single axis
         # x_reshape = x.contiguous().view(x.size(0), -1, x.size(-1))  # (samples * timesteps, input_size)
@@ -170,28 +190,32 @@ class FedNewsRec(nn.Module):
         self.click_td = TimeDistributed(self.doc_encoder) #, batch_first=True)
         self.can_td = TimeDistributed(self.doc_encoder) #, batch_first=True)
         
-    def forward(self, click_title, can_title, news_input):
+    def forward(self, click_title, can_title):
         
+        #print('can_title: ', can_title.shape)
         click_word_vecs = self.title_word_embedding_layer(click_title)
-        print('click',click_word_vecs.shape)
+        #print('click',click_word_vecs.shape, click_word_vecs.dtype)
         can_word_vecs = self.title_word_embedding_layer(can_title)
-        print('can', can_word_vecs.shape)
+        #print('can', can_word_vecs.shape, can_word_vecs.dtype)
         click_vecs = self.click_td(click_word_vecs)
-        print('click_vecs (None, 50, 400)', click_vecs.shape)
+        #print('click_vecs (None, 50, 400)', click_vecs.shape)
         can_vecs = self.can_td(can_word_vecs)
-        print('can_vecs (None, 5, 400)', can_vecs.shape)
+        #print('can_vecs (None, 5, 400)', can_vecs.shape)
     
         user_vec = self.user_encoder(click_vecs)        
-        print('user_vec (None, 400)', user_vec.shape)
+        #print('user_vec (None, 400)', user_vec.shape)
         # TODO verify
         scores = torch.einsum('ijk,ik->ij',  can_vecs, user_vec)
-        print('scores  (None, 5)', scores.shape)
+        #print('scores  (None, 5)', scores.shape)
         logits = self.softmax(scores)     
-        print('logits  (None, 5)', logits.shape)
+        #print('logits  (None, 5)', logits.shape)
+                
         
+        #print('user_vec', user_vec.shape)
+        #print('news_vec', news_vec.shape)
+        return logits, user_vec
+
+    def news_encoder(self, news_input):
         news_word_vecs = self.title_word_embedding_layer(news_input)
         news_vec = self.doc_encoder(news_word_vecs)
-        
-        print('user_vec', user_vec.shape)
-        print('news_vec', news_vec.shape)
-        return logits, user_vec, news_vec
+        return news_vec

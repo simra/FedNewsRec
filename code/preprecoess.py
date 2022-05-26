@@ -80,7 +80,7 @@ def get_doc_input(news,news_index,category,subcategory,word_dict):
 
 
 def load_matrix(embedding_path,word_dict):
-    embedding_matrix = np.zeros((len(word_dict)+1,300))
+    embedding_matrix = np.zeros((len(word_dict)+1,300), dtype=np.float32)
     have_word=[]
     with open(os.path.join(embedding_path,'glove.840B.300d.txt'),'rb') as f:
         while True:
@@ -92,7 +92,7 @@ def load_matrix(embedding_path,word_dict):
             if word in word_dict:
                 index = word_dict[word]
                 tp = [float(x) for x in l[1:]]
-                embedding_matrix[index]=np.array(tp)
+                embedding_matrix[index]=np.array(tp, dtype=np.float32)
                 have_word.append(word)
     return embedding_matrix,have_word
 
