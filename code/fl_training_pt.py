@@ -64,7 +64,7 @@ def fed_single_update(model,doc_encoder,user_encoder,num,lambd,get_user_data,tra
         # Adjust learning weights
         model.optimizer.step()
         
-        loss_history.append(loss)
+        loss_history.append(loss.detach().numpy())
         news_weight = doc_encoder.get_weights()
         user_weight = user_encoder.get_weights()
         if lambd>0:
@@ -87,6 +87,7 @@ def fed_single_update(model,doc_encoder,user_encoder,num,lambd,get_user_data,tra
     #print('weights_numpy:', doc_weights.shape, user_weights.shape)
     doc_encoder.set_weights(doc_weights)
     user_encoder.set_weights(user_weights)
+    # TODO: also a gpu op
     loss = np.array(loss_history).mean()
-    #print('average loss',loss)
+    print('average loss',loss)
     return loss

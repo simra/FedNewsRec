@@ -94,7 +94,7 @@ while True:
                              train_uid_table)
     Loss.append(loss)
     if count % 25 == 0:
-        news_scoring = model.news_encoder(news_title) # ,verbose=0)
+        news_scoring = model.news_encoder(torch.from_numpy(news_title)) # ,verbose=0)
         user_generator = get_hir_user_generator(news_scoring,test_user['click'],64)
         user_scoring = user_encoder.predict_generator(user_generator,verbose=0),
         user_scoring = user_scoring[0]
