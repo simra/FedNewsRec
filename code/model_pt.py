@@ -63,6 +63,7 @@ class DocEncoder(nn.Module):
         )
     
     def forward(self, x):
+        # print(x.shape)
         l_cnnt = self.phase1(x)
         # print('doc_encoder:phase1',l_cnnt.shape)
         l_cnnt, attention_weights = self.attention(l_cnnt, l_cnnt, l_cnnt)

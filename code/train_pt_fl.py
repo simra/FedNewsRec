@@ -3,10 +3,11 @@ from fl_training import GetUserDataFunc
 from preprecoess import get_doc_input, get_test_input, get_train_input, load_matrix, parse_user, read_clickhistory, read_news
 from model_pt import FedNewsRec
 import numpy as np
+from sklearn.metrics import roc_auc_score
 import torch
 from torch import nn, optim
 # from torchsummary import summary
-from utils import evaluate
+from utils import evaluate, dcg_score, ndcg_score, mrr_score
 
 root_data_path = '../../DP-REC/data' # MIND-Dataset Path
 embedding_path = '../../DP-REC/wordvec' # Word Embedding Path
@@ -51,6 +52,7 @@ if __name__ == '__main__':
             uid = train_uid_table[uidx]
             click, sample, label = get_user_data(uid)
             click = torch.from_numpy(click).cuda()
+            print(click.shape)
             sample = torch.from_numpy(sample).cuda()
             label = torch.from_numpy(label).type(torch.LongTensor).cuda()
 
@@ -80,14 +82,46 @@ if __name__ == '__main__':
         del pretrained_dict, running_average
         torch.cuda.empty_cache()
 
-        print(torch.cuda.memory_summary())
+        # print(torch.cuda.memory_summary())
 
         print("Loss:", total_loss / args.localiters / args.perround)
 
-        # if ridx % 25 == 0:
-        #     news_encodings = []
-        #     for title in news_title:
-        #         news_encodings.append(model.news_encoder(torch.from_numpy(title).cuda()))
-        #     user_encodings = model.user_encoder(news_encodings[test_user['click'][:args.batchsize]])
-        #     result = evaluate(user_encodings, news_encodings, test_impressions)
-        #     print("Test Log:", result)
+        if ridx % 25 == 0:
+            AUC = []
+            MRR = []
+            nDCG5 = []
+            nDCG10 =[]
+            for i in range(len(test_impressions)):
+                print(i)
+                docids = test_impressions[i]['docs']
+                labels = test_impressions[i]['labels']
+                nv_imp = []
+                for j in docids:
+                    nv_imp.append(model.news_encoder(torch.from_numpy(np.array([news_title[j]])).cuda()).detach().cpu().numpy())
+                nv = np.array(nv_imp)
+                nv_hist = []
+                for j in test_user['click'][i]:
+                    # print(j)
+                    nv_hist.append(model.news_encoder(torch.from_numpy(np.array([news_title[j]])).cuda()))
+                uv = model.user_encoder(torch.stack(nv_hist)).detach().cpu().numpy()[0]
+
+                score = np.dot(nv,uv)
+                auc = roc_auc_score(labels,score)
+                mrr = mrr_score(labels,score)
+                ndcg5 = ndcg_score(labels,score,k=5)
+                ndcg10 = ndcg_score(labels,score,k=10)
+
+                AUC.append(auc)
+                MRR.append(mrr)
+                nDCG5.append(ndcg5)
+                nDCG10.append(ndcg10)
+            print(np.mean(AUC), np.mean(MRR), np.mean(nDCG5), np.mean(nDCG10))
+"""
+            news_encodings = []
+            for title in news_title:
+                title = torch.from_numpy(np.array([title])).cuda()
+                news_encodings.append(model.news_encoder(title).cpu())
+            user_encodings = model.user_encoder(news_encodings[test_user['click'][:args.batchsize]])
+            result = evaluate(user_encodings, news_encodings, test_impressions)
+            print("Test Log:", result)
+"""
