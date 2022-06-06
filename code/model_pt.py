@@ -1,4 +1,4 @@
-import numpy
+import numpy as np
 import torch
 import torch.nn as nn
 #from torch.nn import MultiHeadAttention
@@ -44,11 +44,6 @@ class SwapTrailingAxes(nn.Module):
     def forward(self, x):        
         return x.transpose(-2, -1)
 
-def xavier_init(m):
-    if type(m) == nn.MultiheadAttention:
-        # torch.nn.init.xavier_uniform_(m.weight)
-        print(m.weight)
-
 class DocEncoder(nn.Module):
     def __init__(self):        
         super(DocEncoder,self).__init__()
@@ -63,15 +58,14 @@ class DocEncoder(nn.Module):
             SwapTrailingAxes()
         )
         self.attention = nn.MultiheadAttention(400,20)
-        torch.nn.init.xavier_uniform_(self.attention.in_proj_weight)
-        # torch.nn.init.xavier_uniform_(self.attention.k_proj_weight)
-        # torch.nn.init.xavier_uniform_(self.attention.v_proj_weight)
+        # Pytorch MultiheadAttention has in_proj_weight of size (3*embed_dim, embed_dim)
+        # Thus, we need to scale the xavier by sqrt(2)
+        torch.nn.init.xavier_uniform_(self.attention.in_proj_weight, gain=np.sqrt(2))
         self.phase2 = nn.Sequential(
             nn.ReLU(),
             nn.Dropout(0.2),
             AttentivePooling(30,400)
         )
-        # self.phase2.apply(xavier_init)
 
     
     def forward(self, x):
@@ -103,6 +97,7 @@ class UserEncoder(nn.Module):
         #self.attention = nn.MultiheadAttention(400, 20)
         #self.pool = AttentivePooling(50, 400)
         self.attention2 = nn.MultiheadAttention(400, 20)
+        torch.nn.init.xavier_uniform_(self.attention2.in_proj_weight, gain=np.sqrt(2))
         self.dropout2 = nn.Dropout(0.2)
         self.pool2 = AttentivePooling(50, 400)
         self.tail2 = VecTail(20)
@@ -150,7 +145,7 @@ class TimeDistributed(nn.Module):
         if len(x.size()) <= 2:
             return self.module(x)
 
-        output = torch.tensor([]).cuda()
+        output = torch.tensor([]).cuda(x.get_device())
         for i in range(x.size(1)):
           output_t = self.module(x[:, i, :, :])
           output_t  = output_t.unsqueeze(1)
