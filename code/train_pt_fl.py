@@ -10,10 +10,10 @@ from torch import nn, optim
 from utils import evaluate, dcg_score, ndcg_score, mrr_score
 from tqdm import tqdm 
 
-#root_data_path = '../../DP-REC/data' # MIND-Dataset Path
-#embedding_path = '../../DP-REC/wordvec' # Word Embedding Path
-root_data_path = '/home/rsim/MIND' # MIND-Dataset Path
-embedding_path = '/home/rsim/GLOVE' # Word Embedding Path
+root_data_path = '../../DP-REC/data' # MIND-Dataset Path
+embedding_path = '../../DP-REC/wordvec' # Word Embedding Path
+# root_data_path = '/home/rsim/MIND' # MIND-Dataset Path
+# embedding_path = '/home/rsim/GLOVE' # Word Embedding Path
 
 if __name__ == '__main__':
 
@@ -66,9 +66,10 @@ if __name__ == '__main__':
             label = torch.from_numpy(label).type(torch.LongTensor).cuda()
 
             for itr in range(args.localiters):
-                output, _, _ = model(click, sample, label)
+                output = model(click, sample)
                 # print(output.shape, label.shape)
                 # print(output.cpu().detach().numpy(), label.cpu().detach().numpy())# output.item(), label.item())
+                # TODO: check the labels are used in the right way
                 loss = criterion(output, torch.max(label, 1)[1])
                 total_loss += loss.item()
                 loss.backward()

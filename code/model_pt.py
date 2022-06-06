@@ -44,23 +44,35 @@ class SwapTrailingAxes(nn.Module):
     def forward(self, x):        
         return x.transpose(-2, -1)
 
+def xavier_init(m):
+    if type(m) == nn.MultiheadAttention:
+        # torch.nn.init.xavier_uniform_(m.weight)
+        print(m.weight)
+
 class DocEncoder(nn.Module):
     def __init__(self):        
         super(DocEncoder,self).__init__()
         self.phase1 = nn.Sequential(
             nn.Dropout(0.2),
+            # TODO: why we need the SwapTrailingAxes here?
             SwapTrailingAxes(),            
             nn.Conv1d(300,400,3),
             nn.ReLU(),
             nn.Dropout(0.2),
+            # TODO: seems here we swap the dimension back. why?
             SwapTrailingAxes()
         )
         self.attention = nn.MultiheadAttention(400,20)
+        torch.nn.init.xavier_uniform_(self.attention.in_proj_weight)
+        # torch.nn.init.xavier_uniform_(self.attention.k_proj_weight)
+        # torch.nn.init.xavier_uniform_(self.attention.v_proj_weight)
         self.phase2 = nn.Sequential(
             nn.ReLU(),
             nn.Dropout(0.2),
             AttentivePooling(30,400)
         )
+        # self.phase2.apply(xavier_init)
+
     
     def forward(self, x):
         # print(x.shape)
@@ -94,6 +106,7 @@ class UserEncoder(nn.Module):
         self.dropout2 = nn.Dropout(0.2)
         self.pool2 = AttentivePooling(50, 400)
         self.tail2 = VecTail(20)
+        #TODO: what is batch_first?
         self.gru2 = nn.GRU(400,400, batch_first=True)
         self.pool3 = AttentivePooling(2, 400)
 
@@ -115,6 +128,7 @@ class UserEncoder(nn.Module):
         # print('tail2_user_vecs1', user_vecs1.shape)
         user_vec1, _u_hidden = self.gru2(user_vecs1)
         # print('gru2_user_vec1', user_vec1.shape)
+        # TODO: does this flatten the second dimension? print out the shape to check
         user_vec1 = user_vec1[:, -1, :]
         #user_vec1 = keras.layers.Reshape((1,400))(user_vec1)
         #user_vec1 = user_vec1.unsqueeze(1)
@@ -170,7 +184,7 @@ class FedNewsRec(nn.Module):
         self.click_td = TimeDistributed(self.doc_encoder) #, batch_first=True)
         self.can_td = TimeDistributed(self.doc_encoder) #, batch_first=True)
         
-    def forward(self, click_title, can_title, news_input):
+    def forward(self, click_title, can_title):
         
         click_word_vecs = self.title_word_embedding_layer(click_title)
         # print('click', click_word_vecs.shape, click_word_vecs.type)
@@ -189,12 +203,12 @@ class FedNewsRec(nn.Module):
         logits = self.softmax(scores)     
         # print('logits  (None, 5)', logits.shape)
         
-        news_word_vecs = self.title_word_embedding_layer(news_input)
-        news_vec = self.doc_encoder(news_word_vecs)
+        # news_word_vecs = self.title_word_embedding_layer(news_input)
+        # news_vec = self.doc_encoder(news_word_vecs)
         
         # print('user_vec', user_vec.shape)
         # print('news_vec', news_vec.shape)
-        return logits, user_vec, news_vec
+        return logits
 
     def news_encoder(self, news_title):
         news_word_vecs = self.title_word_embedding_layer(news_title)
