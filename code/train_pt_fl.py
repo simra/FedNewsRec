@@ -8,9 +8,12 @@ import torch
 from torch import nn, optim
 # from torchsummary import summary
 from utils import evaluate, dcg_score, ndcg_score, mrr_score
+from tqdm import tqdm 
 
-root_data_path = '../../DP-REC/data' # MIND-Dataset Path
-embedding_path = '../../DP-REC/wordvec' # Word Embedding Path
+#root_data_path = '../../DP-REC/data' # MIND-Dataset Path
+#embedding_path = '../../DP-REC/wordvec' # Word Embedding Path
+root_data_path = '/home/rsim/MIND' # MIND-Dataset Path
+embedding_path = '/home/rsim/GLOVE' # Word Embedding Path
 
 if __name__ == '__main__':
 
@@ -41,6 +44,12 @@ if __name__ == '__main__':
     criterion = nn.CrossEntropyLoss()
 
     # print(torch.cuda.memory_summary())
+
+    # doc cache
+    doc_cache = []
+    print('building doc_cache')
+    for j in range(len(news_title)):
+        doc_cache.append(torch.from_numpy(np.array([news_title[j]])))
 
     for ridx in range(args.rounds):
         random_index = np.random.permutation(len(train_uid_table))[:args.perround]
@@ -91,19 +100,22 @@ if __name__ == '__main__':
             MRR = []
             nDCG5 = []
             nDCG10 =[]
-            for i in range(len(test_impressions)):
-                print(i)
+            for i in tqdm(range(len(test_impressions))):
+                #print(i)
                 docids = test_impressions[i]['docs']
                 labels = test_impressions[i]['labels']
                 nv_imp = []
                 for j in docids:
-                    nv_imp.append(model.news_encoder(torch.from_numpy(np.array([news_title[j]])).cuda()).detach().cpu().numpy())
-                nv = np.array(nv_imp)
-                nv_hist = []
+                    nv_imp.append(doc_cache[j])
+                nv = model.news_encoder(torch.stack(nv_imp).squeeze(1).cuda()).detach().cpu().numpy()                    
+                #nv = np.array(nv_imp)
+                nv_hist = []                
                 for j in test_user['click'][i]:
+                    nv_hist.append(doc_cache[j])
                     # print(j)
-                    nv_hist.append(model.news_encoder(torch.from_numpy(np.array([news_title[j]])).cuda()))
-                uv = model.user_encoder(torch.stack(nv_hist)).detach().cpu().numpy()[0]
+                nv_hist = model.news_encoder(torch.stack(nv_hist).squeeze(1).cuda())
+                # print("nv_hist:", nv_hist.shape)
+                uv = model.user_encoder(nv_hist.unsqueeze(0)).detach().cpu().numpy()[0]
 
                 score = np.dot(nv,uv)
                 auc = roc_auc_score(labels,score)
