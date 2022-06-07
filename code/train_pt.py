@@ -44,7 +44,7 @@ if __name__ == '__main__':
             # print("####", label.type())
 
             optimizer.zero_grad()
-            output, _, _ = model(click, sample, label)
+            output = model(click, sample)
             # print(output.shape, label.shape)
             # print(output.cpu().detach().numpy(), label.cpu().detach().numpy())# output.item(), label.item())
             loss = criterion(output, torch.max(label, 1)[1])
@@ -52,3 +52,38 @@ if __name__ == '__main__':
             optimizer.step()
 
             print("Loss: ", loss.item())
+
+        if ridx % 25 == 0:
+            AUC = []
+            MRR = []
+            nDCG5 = []
+            nDCG10 =[]
+            for i in tqdm(range(len(test_impressions))):
+                #print(i)
+                docids = test_impressions[i]['docs']
+                labels = test_impressions[i]['labels']
+                nv_imp = []
+                for j in docids:
+                    nv_imp.append(doc_cache[j])
+                nv = model.news_encoder(torch.stack(nv_imp).squeeze(1).cuda()).detach().cpu().numpy()
+                #nv = np.array(nv_imp)
+                nv_hist = []
+                for j in test_user['click'][i]:
+                    nv_hist.append(doc_cache[j])
+                    # print(j)
+                nv_hist = model.news_encoder(torch.stack(nv_hist).squeeze(1).cuda())
+                # print("nv_hist:", nv_hist.shape)
+                uv = model.user_encoder(nv_hist.unsqueeze(0)).detach().cpu().numpy()[0]
+
+                score = np.dot(nv,uv)
+                auc = roc_auc_score(labels,score)
+                mrr = mrr_score(labels,score)
+                ndcg5 = ndcg_score(labels,score,k=5)
+                ndcg10 = ndcg_score(labels,score,k=10)
+
+                AUC.append(auc)
+                MRR.append(mrr)
+                nDCG5.append(ndcg5)
+                nDCG10.append(ndcg10)
+            print(np.mean(AUC), np.mean(MRR), np.mean(nDCG5), np.mean(nDCG10))
+

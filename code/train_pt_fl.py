@@ -16,7 +16,6 @@ import sys
 #embedding_path = '../../DP-REC/wordvec' # Word Embedding Path
 root_data_path = '/home/rsim/MIND' # MIND-Dataset Path
 embedding_path = '/home/rsim/GLOVE' # Word Embedding Path
-test_interval = 100
 
 
 def loss_fn(y_pred, y_true):
@@ -29,9 +28,11 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--batchsize', type=int, default=64)
-    parser.add_argument('--localiters', type=int, default=5)
+    parser.add_argument('--localiters', type=int, default=1)
     parser.add_argument('--lr', type=float, default=0.1)
     parser.add_argument('--lmb', type=float, default=0)
+    parser.add_argument('--checkpoint', type=int, default=25)
+    parser.add_argument('--device', type=int, default=0)
     parser.add_argument('--perround', type=int, default=6)
     parser.add_argument('--rounds', type=int, default=1)
     args = parser.parse_args()
@@ -50,7 +51,7 @@ if __name__ == '__main__':
     # print(news_title.shape)
     # news_title = torch.from_numpy(news_title).cuda()
 
-    model = FedNewsRec(title_word_embedding_matrix).cuda()
+    model = FedNewsRec(title_word_embedding_matrix).cuda(args.device)
     optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.lmb)
     criterion = nn.CrossEntropyLoss()
     # criterion = loss_fn
@@ -60,12 +61,12 @@ if __name__ == '__main__':
     metrics_fn = f'metrics_{datetime.now().strftime("%y%m%d%H%M%S")}.tsv'
     # doc cache
     doc_cache = []
-    print('building doc_cache')
+    # print('building doc_cache')
     for j in range(len(news_title)):
         doc_cache.append(torch.from_numpy(np.array([news_title[j]])))
 
-    for ridx in range(args.rounds):
-        model.train()
+
+    for ridx in tqdm(range(args.rounds)):
         random_index = np.random.permutation(len(train_uid_table))[:args.perround]
         pretrained_dict = model.state_dict()
         running_average = model.state_dict()
@@ -74,18 +75,17 @@ if __name__ == '__main__':
         for uidx in random_index:
             uid = train_uid_table[uidx]
             click, sample, label = get_user_data(uid)
-            click = torch.from_numpy(click).cuda()
+            click = torch.from_numpy(click).cuda(args.device)
             # print(click.shape)
-            sample = torch.from_numpy(sample).cuda()
-            label = torch.from_numpy(label).cuda() #type(torch.LongTensor).cuda()
+            sample = torch.from_numpy(sample).cuda(args.device)
+            label = torch.from_numpy(label).cuda(args.device) #type(torch.LongTensor).cuda(args.device)
 
             for itr in range(args.localiters):
-                output, _ = model(click, sample) #, label)
+                output, _ = model(click, sample)
                 # print(output.shape, label.shape)
                 # print(output.cpu().detach().numpy(), label.cpu().detach().numpy())# output.item(), label.item())
-                #loss = criterion(output, torch.max(label, 1)[1])
-                #print(output.detach().cpu().numpy())
-                loss = criterion(output, label)
+                # TODO: check the labels are used in the right way
+                loss = criterion(output, label) #torch.max(label, 1)[1])
                 total_loss += loss.item()
                 if total_loss / args.localiters / args.perround > 100.0:
                 # if np.isnan(total_loss):     
@@ -117,10 +117,10 @@ if __name__ == '__main__':
 
         # print(torch.cuda.memory_summary())
 
-        print("Loss:", total_loss / args.localiters / args.perround)
+        print("Round:", ridx+1, "Loss:", total_loss / args.localiters / args.perround)
         sys.stdout.flush()
 
-        if (ridx + 1) % test_interval == 0:
+        if (ridx + 1) % args.checkpoint == 0:
             print('running test metrics')
             model.eval()
             with torch.no_grad():
