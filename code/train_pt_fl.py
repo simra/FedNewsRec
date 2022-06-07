@@ -72,6 +72,7 @@ if __name__ == '__main__':
         running_average = model.state_dict()
         total_loss = 0.
 
+        model.train()        
         for uidx in random_index:
             uid = train_uid_table[uidx]
             click, sample, label = get_user_data(uid)
