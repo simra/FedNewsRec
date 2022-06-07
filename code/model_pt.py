@@ -1,6 +1,7 @@
 import numpy
 import torch
 import torch.nn as nn
+import logging
 #from torch.nn import MultiHeadAttention
 
 from sklearn.metrics import accuracy_score, classification_report
@@ -17,17 +18,34 @@ class AttentivePooling(nn.Module):
         self.dropout = nn.Dropout(0.2)
         self.dense  = nn.Linear(dim2, 200)
         self.tanh = nn.Tanh()
-        self.flatten = nn.Linear(200, 1)
+        self.dense2 = nn.Linear(200, 1)
         self.softmax = nn.Softmax(dim=1)
        
 
     def forward(self, x):
         user_vecs = self.dropout(x)
+        logging.debug(f'user_vecs {user_vecs.shape}')
         user_att = self.tanh(self.dense(user_vecs))
-        user_att = self.flatten(user_att)
+        logging.debug(f'dense1 {user_att.shape}')
+        user_att = self.dense2(user_att).squeeze(2)
+        logging.debug(f'flatten{user_att.shape}')
         user_att = self.softmax(user_att)
-        result = torch.einsum('ijk,ijk->ik', user_vecs, user_att)
+        logging.debug(f'softmax {user_att.shape}')
+        # print('user_att: ', user_att.detach().numpy())
+        result = torch.einsum('ijk,ij->ik', user_vecs, user_att)
+        logging.debug(f'dot {result.shape}')
         return result
+
+    def fromTensorFlow(self, tfmodel):
+        keras_weights = tfmodel.layers[1].get_weights()
+        # print(keras_weights)
+        self.dense.weight.data = torch.tensor(keras_weights[0]).transpose(0,1)
+        self.dense.bias.data = torch.tensor(keras_weights[1])
+
+        keras_weights = tfmodel.layers[2].get_weights()
+        # print(keras_weights)
+        self.dense2.weight.data = torch.tensor(keras_weights[0]).transpose(0,1)
+        self.dense2.bias.data = torch.tensor(keras_weights[1])
 
 class Permute(nn.Module):
     def __init__(self, *dims):
@@ -55,7 +73,7 @@ class DocEncoder(nn.Module):
             nn.Dropout(0.2),
             SwapTrailingAxes()
         )
-        self.attention = nn.MultiheadAttention(400,20)
+        self.attention = nn.MultiheadAttention(400, 20, batch_first=True)
         self.phase2 = nn.Sequential(
             nn.ReLU(),
             nn.Dropout(0.2),
@@ -90,7 +108,7 @@ class UserEncoder(nn.Module):
         #self.gru = nn.GRU(400, 400)
         #self.attention = nn.MultiheadAttention(400, 20)
         #self.pool = AttentivePooling(50, 400)
-        self.attention2 = nn.MultiheadAttention(400, 20)
+        self.attention2 = nn.MultiheadAttention(400, 20, batch_first=True)
         self.dropout2 = nn.Dropout(0.2)
         self.pool2 = AttentivePooling(50, 400)
         self.tail2 = VecTail(20)
@@ -170,7 +188,7 @@ class FedNewsRec(nn.Module):
         self.click_td = TimeDistributed(self.doc_encoder) #, batch_first=True)
         self.can_td = TimeDistributed(self.doc_encoder) #, batch_first=True)
         
-    def forward(self, click_title, can_title, news_input):
+    def forward(self, click_title, can_title, verbose=False):
         
         click_word_vecs = self.title_word_embedding_layer(click_title)
         # print('click', click_word_vecs.shape, click_word_vecs.type)
@@ -185,16 +203,20 @@ class FedNewsRec(nn.Module):
         # print('user_vec (None, 400)', user_vec.shape)
         # TODO verify
         scores = torch.einsum('ijk,ik->ij',  can_vecs, user_vec)
+        if verbose:            
+            print('model scores:', scores.detach().cpu().numpy())
         # print('scores  (None, 5)', scores.shape)
-        logits = self.softmax(scores)     
+        #logits = self.softmax(scores)     
+        # pytorch crossentropyloss function accepts unnormalized scores.
+        logits = scores
         # print('logits  (None, 5)', logits.shape)
         
-        news_word_vecs = self.title_word_embedding_layer(news_input)
-        news_vec = self.doc_encoder(news_word_vecs)
+        #news_word_vecs = self.title_word_embedding_layer(news_input)
+        #news_vec = self.doc_encoder(news_word_vecs)
         
         # print('user_vec', user_vec.shape)
-        # print('news_vec', news_vec.shape)
-        return logits, user_vec, news_vec
+        # print('news_vec', news_vec.shape)        
+        return logits, user_vec #, news_vec
 
     def news_encoder(self, news_title):
         news_word_vecs = self.title_word_embedding_layer(news_title)

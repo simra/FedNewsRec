@@ -9,11 +9,21 @@ from torch import nn, optim
 # from torchsummary import summary
 from utils import evaluate, dcg_score, ndcg_score, mrr_score
 from tqdm import tqdm 
+from datetime import datetime
+import sys
 
 #root_data_path = '../../DP-REC/data' # MIND-Dataset Path
 #embedding_path = '../../DP-REC/wordvec' # Word Embedding Path
 root_data_path = '/home/rsim/MIND' # MIND-Dataset Path
 embedding_path = '/home/rsim/GLOVE' # Word Embedding Path
+test_interval = 100
+
+
+def loss_fn(y_pred, y_true):
+    #print(y_pred.shape, y_true.shape)
+    return (-torch.clamp(y_pred,min=1e-10).log() * y_true).sum(dim=1).mean()
+
+
 
 if __name__ == '__main__':
 
@@ -21,6 +31,7 @@ if __name__ == '__main__':
     parser.add_argument('--batchsize', type=int, default=64)
     parser.add_argument('--localiters', type=int, default=5)
     parser.add_argument('--lr', type=float, default=0.1)
+    parser.add_argument('--lmb', type=float, default=0)
     parser.add_argument('--perround', type=int, default=6)
     parser.add_argument('--rounds', type=int, default=1)
     args = parser.parse_args()
@@ -40,11 +51,13 @@ if __name__ == '__main__':
     # news_title = torch.from_numpy(news_title).cuda()
 
     model = FedNewsRec(title_word_embedding_matrix).cuda()
-    optimizer = optim.SGD(model.parameters(), lr=args.lr)
+    optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.lmb)
     criterion = nn.CrossEntropyLoss()
+    # criterion = loss_fn
 
     # print(torch.cuda.memory_summary())
-
+    print('Using GPU:', torch.cuda.is_available())
+    metrics_fn = f'metrics_{datetime.now().strftime("%y%m%d%H%M%S")}.tsv'
     # doc cache
     doc_cache = []
     print('building doc_cache')
@@ -52,6 +65,7 @@ if __name__ == '__main__':
         doc_cache.append(torch.from_numpy(np.array([news_title[j]])))
 
     for ridx in range(args.rounds):
+        model.train()
         random_index = np.random.permutation(len(train_uid_table))[:args.perround]
         pretrained_dict = model.state_dict()
         running_average = model.state_dict()
@@ -61,16 +75,26 @@ if __name__ == '__main__':
             uid = train_uid_table[uidx]
             click, sample, label = get_user_data(uid)
             click = torch.from_numpy(click).cuda()
-            print(click.shape)
+            # print(click.shape)
             sample = torch.from_numpy(sample).cuda()
-            label = torch.from_numpy(label).type(torch.LongTensor).cuda()
+            label = torch.from_numpy(label).cuda() #type(torch.LongTensor).cuda()
 
             for itr in range(args.localiters):
-                output, _, _ = model(click, sample, label)
+                output, _ = model(click, sample) #, label)
                 # print(output.shape, label.shape)
                 # print(output.cpu().detach().numpy(), label.cpu().detach().numpy())# output.item(), label.item())
-                loss = criterion(output, torch.max(label, 1)[1])
+                #loss = criterion(output, torch.max(label, 1)[1])
+                #print(output.detach().cpu().numpy())
+                loss = criterion(output, label)
                 total_loss += loss.item()
+                if total_loss / args.localiters / args.perround > 100.0:
+                # if np.isnan(total_loss):     
+                    model.eval()               
+                    with torch.no_grad():
+                        print('model output:', output.detach().cpu().numpy(), label.detach().cpu().numpy())
+                        for _ in range(3):
+                            print('other model output:', model(click, sample, verbose=True)[0].detach().cpu().numpy())                    
+                    exit()
                 loss.backward()
                 optimizer.step()
                 optimizer.zero_grad()
@@ -94,40 +118,54 @@ if __name__ == '__main__':
         # print(torch.cuda.memory_summary())
 
         print("Loss:", total_loss / args.localiters / args.perround)
+        sys.stdout.flush()
 
-        if ridx % 25 == 0:
-            AUC = []
-            MRR = []
-            nDCG5 = []
-            nDCG10 =[]
-            for i in tqdm(range(len(test_impressions))):
-                #print(i)
-                docids = test_impressions[i]['docs']
-                labels = test_impressions[i]['labels']
-                nv_imp = []
-                for j in docids:
-                    nv_imp.append(doc_cache[j])
-                nv = model.news_encoder(torch.stack(nv_imp).squeeze(1).cuda()).detach().cpu().numpy()                    
-                #nv = np.array(nv_imp)
-                nv_hist = []                
-                for j in test_user['click'][i]:
-                    nv_hist.append(doc_cache[j])
-                    # print(j)
-                nv_hist = model.news_encoder(torch.stack(nv_hist).squeeze(1).cuda())
-                # print("nv_hist:", nv_hist.shape)
-                uv = model.user_encoder(nv_hist.unsqueeze(0)).detach().cpu().numpy()[0]
+        if (ridx + 1) % test_interval == 0:
+            print('running test metrics')
+            model.eval()
+            with torch.no_grad():
+                AUC = []
+                MRR = []
+                nDCG5 = []
+                nDCG10 =[]
+                for i in range(len(test_impressions)):
+                    if i%10000==0:
+                        print('.', end='') 
+                        sys.stdout.flush()
+                    #print(i)
+                    docids = test_impressions[i]['docs']
+                    labels = test_impressions[i]['labels']
+                    nv_imp = []
+                    for j in docids:
+                        nv_imp.append(doc_cache[j])
+                    nv = model.news_encoder(torch.stack(nv_imp).squeeze(1).cuda()).detach().cpu().numpy()                    
+                    #nv = np.array(nv_imp)
+                    nv_hist = []                
+                    for j in test_user['click'][i]:
+                        nv_hist.append(doc_cache[j])
+                        # print(j)
+                    nv_hist = model.news_encoder(torch.stack(nv_hist).squeeze(1).cuda())
+                    # print("nv_hist:", nv_hist.shape)
+                    uv = model.user_encoder(nv_hist.unsqueeze(0)).detach().cpu().numpy()[0]
 
-                score = np.dot(nv,uv)
-                auc = roc_auc_score(labels,score)
-                mrr = mrr_score(labels,score)
-                ndcg5 = ndcg_score(labels,score,k=5)
-                ndcg10 = ndcg_score(labels,score,k=10)
+                    score = np.dot(nv,uv)
+                    auc = roc_auc_score(labels,score)
+                    mrr = mrr_score(labels,score)
+                    ndcg5 = ndcg_score(labels,score,k=5)
+                    ndcg10 = ndcg_score(labels,score,k=10)
 
-                AUC.append(auc)
-                MRR.append(mrr)
-                nDCG5.append(ndcg5)
-                nDCG10.append(ndcg10)
-            print(np.mean(AUC), np.mean(MRR), np.mean(nDCG5), np.mean(nDCG10))
+                    AUC.append(auc)
+                    MRR.append(mrr)
+                    nDCG5.append(ndcg5)
+                    nDCG10.append(ndcg10)
+                print()
+                metrics_out = [np.mean(AUC), np.mean(MRR), np.mean(nDCG5), np.mean(nDCG10)]
+                metric_str = '\t'.join(map(str,metrics_out))
+                out_str = f"{ridx*args.perround}\t{metric_str}\t{total_loss / args.localiters / args.perround}"
+                print(out_str)
+                with open(metrics_fn, 'a', encoding='utf-8') as f:
+                    f.write(out_str+"\n")
+                
 """
             news_encodings = []
             for title in news_title:
