@@ -24,16 +24,10 @@ class AttentivePooling(nn.Module):
 
     def forward(self, x):
         user_vecs = self.dropout(x)
-        logging.debug(f'user_vecs {user_vecs.shape}')
         user_att = self.tanh(self.dense(user_vecs))
-        logging.debug(f'dense1 {user_att.shape}')
         user_att = self.dense2(user_att).squeeze(2)
-        logging.debug(f'flatten{user_att.shape}')
         user_att = self.softmax(user_att)
-        logging.debug(f'softmax {user_att.shape}')
-        # print('user_att: ', user_att.detach().numpy())
-        result = torch.einsum('ijk,ij->ik', user_vecs, user_att)
-        logging.debug(f'dot {result.shape}')
+        result = torch.einsum('ijk,ij->ik', user_vecs, user_att)        
         return result
 
     def fromTensorFlow(self, tfmodel):
