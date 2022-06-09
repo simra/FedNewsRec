@@ -53,14 +53,17 @@ if __name__ == '__main__':
     # news_title = torch.from_numpy(news_title).cuda()
 
     model = FedNewsRec(title_word_embedding_matrix).cuda(args.device)
-    #optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.lmb)
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.lmb)
+    optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.lmb)
+    #optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.lmb)
     criterion = nn.CrossEntropyLoss()
     #criterion = loss_fn
 
     # print(torch.cuda.memory_summary())
     print('Using GPU:', torch.cuda.is_available())
     metrics_fn = f'metrics_{datetime.now().strftime("%y%m%d%H%M%S")}.tsv'
+    with open(metrics_fn, 'w', encoding='utf-8') as f:
+        f.write(' '.join(sys.argv)+'\n')
+
     # doc cache
     doc_cache = []
     # print('building doc_cache')

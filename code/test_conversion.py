@@ -5,14 +5,14 @@ import tensorflow as tf
 import keras
 from keras.layers import *
 from keras.models import Model
-from model_pt import Attention as ptAttention
+from model_pt import Attention as ptAttention, DocEncoder as ptDocEncoder
 
 
 
 
 class ptAttentivePoolingTest(nn.Module):
     def __init__(self, dim1, dim2, dim3, keras_dense):
-        super(ptDense, self).__init__()
+        super(ptAttentivePoolingTest, self).__init__()
         self.dim1 = dim1
         self.dim2 = dim2
         
@@ -65,7 +65,7 @@ class ptAttentivePoolingTest(nn.Module):
                 ptd.eval()
                 pt = ptd(x).detach().numpy()
                 print(keras.shape, pt.shape)
-                print(keras-pt)
+                print('error:', np.linalg.norm(keras-pt))
 
 
 
@@ -74,7 +74,7 @@ class ptAttn(nn.Module):
         super(ptAttn, self).__init__()
         self.input_shape = input_shape  # should be x by embed_dim        
         
-        self.attention = ptAttention([input_shape]*3, heads, embed_dim//heads)
+        self.attention = ptAttention(input_shape[1], heads, embed_dim//heads)
         self.attention.fromTensorFlow(tfAttention)
         
 
@@ -109,9 +109,59 @@ class ptAttn(nn.Module):
                 ptresult = ptd(x)
                 pt = ptresult.detach().numpy()
                 print(keras.shape, pt.shape)
-                print(keras-pt)
+                print('error:', np.linalg.norm(keras-pt))
 
 
-#ptDenseTest(2, 3, 4)
-ptAttn.ptAttentionTest((2, 12), 12, 4)
+
+class ptDocument(nn.Module):
+    def __init__(self, tfDoc):
+        super(ptDocument, self).__init__()
+        
+        self.docencoder = ptDocEncoder()
+        self.docencoder.fromTensorFlow(tfDoc)
+        
+
+    def forward(self,x):
+        return self.docencoder(x)
+
+    
+    @staticmethod
+    def tfDocEncoder():
+        from models import Attention as tfAttention
+        sentence_input = Input(shape=(30,300), dtype='float32')
+        
+        l_cnnt = Conv1D(400,3,activation='relu')(sentence_input)
+    
+        l_cnnt = tfAttention(20,20)([l_cnnt,l_cnnt,l_cnnt])
+        l_cnnt = keras.layers.Activation('relu')(l_cnnt)
+    
+        title_vec = ptAttentivePoolingTest.tfAttentivePooling(30, 400, 200)(l_cnnt)
+        sentEncoder = Model(sentence_input, title_vec)
+        return sentEncoder
+
+    @staticmethod
+    def ptDocEncoderTest():
+        tfd = ptDocument.tfDocEncoder()
+        for layer in tfd.layers:
+            print(layer.name, layer.output_shape)
+        with tf.Session() as sess:
+            sess.run(tf.global_variables_initializer())
+            ptd = ptDocument(tfd)
+            
+            x = torch.randn((5, 30, 300))
+
+            x_tf = tf.convert_to_tensor(x)
+
+            keras = tfd(x_tf).eval()
+            with torch.no_grad():
+                ptd.eval()
+                ptresult = ptd(x)
+                pt = ptresult.detach().numpy()
+                print(keras.shape, pt.shape)
+                print('error:', np.linalg.norm(keras-pt))
+
+
+ptAttentivePoolingTest.test(2, 3, 4)
+ptAttn.ptAttentionTest((3,20),400,20)
+ptDocument.ptDocEncoderTest()
 
