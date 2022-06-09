@@ -18,6 +18,7 @@ root_data_path = '/home/rsim/MIND' # MIND-Dataset Path
 embedding_path = '/home/rsim/GLOVE' # Word Embedding Path
 
 
+# note: this loss function requires softmax on the model output
 def loss_fn(y_pred, y_true):
     #print(y_pred.shape, y_true.shape)
     return (-torch.clamp(y_pred,min=1e-10).log() * y_true).sum(dim=1).mean()
@@ -52,9 +53,10 @@ if __name__ == '__main__':
     # news_title = torch.from_numpy(news_title).cuda()
 
     model = FedNewsRec(title_word_embedding_matrix).cuda(args.device)
-    optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.lmb)
+    #optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.lmb)
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.lmb)
     criterion = nn.CrossEntropyLoss()
-    # criterion = loss_fn
+    #criterion = loss_fn
 
     # print(torch.cuda.memory_summary())
     print('Using GPU:', torch.cuda.is_available())
@@ -88,7 +90,7 @@ if __name__ == '__main__':
                 # TODO: check the labels are used in the right way
                 loss = criterion(output, label) #torch.max(label, 1)[1])
                 total_loss += loss.item()
-                if total_loss / args.localiters / args.perround > 100.0:
+                if total_loss / args.localiters / args.perround > 1e6:
                 # if np.isnan(total_loss):     
                     model.eval()               
                     with torch.no_grad():
@@ -162,7 +164,7 @@ if __name__ == '__main__':
                 print()
                 metrics_out = [np.mean(AUC), np.mean(MRR), np.mean(nDCG5), np.mean(nDCG10)]
                 metric_str = '\t'.join(map(str,metrics_out))
-                out_str = f"{ridx*args.perround}\t{metric_str}\t{total_loss / args.localiters / args.perround}"
+                out_str = f"{(ridx+1)*args.perround}\t{metric_str}\t{total_loss / args.localiters / args.perround}"
                 print(out_str)
                 with open(metrics_fn, 'a', encoding='utf-8') as f:
                     f.write(out_str+"\n")
