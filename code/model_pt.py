@@ -41,6 +41,73 @@ class AttentivePooling(nn.Module):
         self.dense2.weight.data = torch.tensor(keras_weights[0]).transpose(0,1)
         self.dense2.bias.data = torch.tensor(keras_weights[1])
 
+class Attention(nn.Module):
+ 
+    def __init__(self, input_dim, nb_head, size_per_head, **kwargs):
+        super(Attention, self).__init__(**kwargs)
+        #self.input_shape = input_shape
+        self.input_dim = input_dim
+        self.nb_head = nb_head
+        self.size_per_head = size_per_head
+        self.output_dim = nb_head*size_per_head
+        #self.WQ = nn.Linear(self.input_shape[0][-1], self.output_dim, bias=False)
+        #self.WK = nn.Linear(self.input_shape[1][-1], self.output_dim, bias=False)
+        #self.WV = nn.Linear(self.input_shape[2][-1], self.output_dim, bias=False)
+        self.WQ = nn.Linear(self.input_dim, self.output_dim, bias=False)
+        self.WK = nn.Linear(self.input_dim, self.output_dim, bias=False)
+        self.WV = nn.Linear(self.input_dim, self.output_dim, bias=False)
+        
+
+    def fromTensorFlow(self, tf):
+        for l in tf.layers:
+            print(l.name, l.output_shape)
+            if l.name.startswith('attention'):
+                weights = l.get_weights()
+                self.WQ.weight.data = torch.tensor(weights[0].transpose())
+                self.WK.weight.data = torch.tensor(weights[1].transpose())
+                self.WV.weight.data = torch.tensor(weights[2].transpose())
+                
+
+ 
+    def forward(self, x):
+        if len(x) == 3:
+            Q_seq,K_seq,V_seq = x
+            Q_len,V_len = None,None
+        
+        Q_seq = self.WQ(Q_seq)
+        Q_seq = torch.reshape(Q_seq, (-1, Q_seq.shape[1], self.nb_head, self.size_per_head))
+        #Q_seq = K.permute_dimensions(Q_seq, (0,2,1,3))
+        Q_seq = torch.transpose(Q_seq, 1, 2)
+        K_seq = self.WK(K_seq)
+        K_seq = torch.reshape(K_seq, (-1, K_seq.shape[1], self.nb_head, self.size_per_head))
+        K_seq = torch.transpose(K_seq, 1, 2)
+        V_seq = self.WV(V_seq)
+        V_seq = torch.reshape(V_seq, (-1, V_seq.shape[1], self.nb_head, self.size_per_head))
+        V_seq = torch.transpose(V_seq, 1, 2)
+        
+        #print('pt shapes')
+        #print(Q_seq.shape, K_seq.shape)
+        #A = K.batch_dot(Q_seq, K_seq, axes=[3,3]) / self.size_per_head**0.5
+        A = torch.einsum('ijkl,ijml->ijkm', Q_seq, K_seq) / self.size_per_head**0.5
+        # A = K.permute_dimensions(A, (0,3,2,1))
+        # A = self.Mask(A, V_len, 'add')
+        # A = K.permute_dimensions(A, (0,3,2,1))
+        A = torch.softmax(A, dim=-1)
+        #输出并mask
+        #O_seq = K.batch_dot(A, V_seq, axes=[3,2])
+        O_seq = torch.einsum('ijkl,ijlm->ijkm', A, V_seq)
+        #O_seq = K.permute_dimensions(O_seq, (0,2,1,3))
+        O_seq = torch.transpose(O_seq, 1,2)
+        #O_seq = K.reshape(O_seq, (-1, K.shape(O_seq)[1], self.output_dim))
+        O_seq = torch.reshape(O_seq, (-1, O_seq.shape[1], self.output_dim))
+        #O_seq = self.Mask(O_seq, Q_len, 'mul')
+        return O_seq
+ 
+
+
+
+
+
 class Permute(nn.Module):
     def __init__(self, *dims):
         super(Permute, self).__init__()
@@ -70,10 +137,11 @@ class DocEncoder(nn.Module):
             SwapTrailingAxes()
         )
 
-        self.attention = nn.MultiheadAttention(400, 20, batch_first=True)
+        #self.attention = nn.MultiheadAttention(400, 20, batch_first=True)
+        self.attention = Attention(400, 20, 20)
         # Pytorch MultiheadAttention has in_proj_weight of size (3*embed_dim, embed_dim)
         # Thus, we need to scale the xavier by sqrt(2)
-        torch.nn.init.xavier_uniform_(self.attention.in_proj_weight, gain=np.sqrt(2))
+        #torch.nn.init.xavier_uniform_(self.attention.in_proj_weight, gain=np.sqrt(2))
         self.phase2 = nn.Sequential(
             nn.ReLU(),
             nn.Dropout(0.2),
@@ -85,7 +153,7 @@ class DocEncoder(nn.Module):
         # print(x.shape)
         l_cnnt = self.phase1(x)
         # print('doc_encoder:phase1',l_cnnt.shape)
-        l_cnnt, attention_weights = self.attention(l_cnnt, l_cnnt, l_cnnt)
+        l_cnnt = self.attention([l_cnnt]*3)
         # print('doc_encoder:attention', l_cnnt.shape)
         result = self.phase2(l_cnnt)
         # print('doc_encoder:phase2', result.shape)
@@ -109,8 +177,9 @@ class UserEncoder(nn.Module):
         #self.gru = nn.GRU(400, 400)
         #self.attention = nn.MultiheadAttention(400, 20)
         #self.pool = AttentivePooling(50, 400)
-        self.attention2 = nn.MultiheadAttention(400, 20, batch_first=True)
-        torch.nn.init.xavier_uniform_(self.attention2.in_proj_weight, gain=np.sqrt(2))
+        #self.attention2 = nn.MultiheadAttention(400, 20, batch_first=True)
+        self.attention2 = Attention(400, 20, 20)
+        #torch.nn.init.xavier_uniform_(self.attention2.in_proj_weight, gain=np.sqrt(2))
         self.dropout2 = nn.Dropout(0.2)
         self.pool2 = AttentivePooling(50, 400)
         self.tail2 = VecTail(20)
@@ -125,7 +194,7 @@ class UserEncoder(nn.Module):
         #vecs2 = self.attention(*[news_vecs]*3)
         #vec2 = self.pool(vecs2)
         # print('news_vecs_input', news_vecs_input.shape)
-        user_vecs2, _u_weights = self.attention2(*[news_vecs_input]*3)
+        user_vecs2 = self.attention2([news_vecs_input]*3)
         user_vecs2 = self.dropout2(user_vecs2)
         user_vec2 = self.pool2(user_vecs2)
         # print('pool2_user_vec2', user_vec2.shape)

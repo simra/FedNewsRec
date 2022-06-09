@@ -66,7 +66,7 @@ if __name__ == '__main__':
         doc_cache.append(torch.from_numpy(np.array([news_title[j]])))
 
 
-    for ridx in tqdm(range(args.rounds)):
+    for ridx in range(args.rounds): #tqdm(range(args.rounds)):
         random_index = np.random.permutation(len(train_uid_table))[:args.perround]
         pretrained_dict = model.state_dict()
         running_average = model.state_dict()
@@ -94,7 +94,7 @@ if __name__ == '__main__':
                     with torch.no_grad():
                         print('model output:', output.detach().cpu().numpy(), label.detach().cpu().numpy())
                         for _ in range(3):
-                            print('other model output:', model(click, sample, verbose=True)[0].detach().cpu().numpy())                    
+                            print('other model output:', model(click, sample)[0].detach().cpu().numpy())                    
                     exit()
                 loss.backward()
                 optimizer.step()
@@ -139,13 +139,13 @@ if __name__ == '__main__':
                     nv_imp = []
                     for j in docids:
                         nv_imp.append(doc_cache[j])
-                    nv = model.news_encoder(torch.stack(nv_imp).squeeze(1).cuda()).detach().cpu().numpy()                    
+                    nv = model.news_encoder(torch.stack(nv_imp).squeeze(1).cuda(args.device)).detach().cpu().numpy()                    
                     #nv = np.array(nv_imp)
                     nv_hist = []                
                     for j in test_user['click'][i]:
                         nv_hist.append(doc_cache[j])
                         # print(j)
-                    nv_hist = model.news_encoder(torch.stack(nv_hist).squeeze(1).cuda())
+                    nv_hist = model.news_encoder(torch.stack(nv_hist).squeeze(1).cuda(args.device))
                     # print("nv_hist:", nv_hist.shape)
                     uv = model.user_encoder(nv_hist.unsqueeze(0)).detach().cpu().numpy()[0]
 
