@@ -6,6 +6,7 @@ import numpy as np
 from sklearn.metrics import roc_auc_score
 import torch
 from torch import nn, optim
+from torch.optim import lr_scheduler
 # from torchsummary import summary
 from utils import evaluate, dcg_score, ndcg_score, mrr_score
 from tqdm import tqdm 
@@ -54,6 +55,7 @@ if __name__ == '__main__':
 
     model = FedNewsRec(title_word_embedding_matrix).cuda(args.device)
     optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.lmb)
+    scheduler = lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.99)
     #optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.lmb)
     criterion = nn.CrossEntropyLoss()
     #criterion = loss_fn
@@ -88,7 +90,7 @@ if __name__ == '__main__':
 
             for itr in range(args.localiters):
                 output, _ = model(click, sample)
-                # print(output.shape, label.shape)
+                #print(output.shape, label.shape, label.detach().cpu().numpy())
                 # print(output.cpu().detach().numpy(), label.cpu().detach().numpy())# output.item(), label.item())
                 # TODO: check the labels are used in the right way
                 loss = criterion(output, label) #torch.max(label, 1)[1])
@@ -117,10 +119,10 @@ if __name__ == '__main__':
             torch.cuda.empty_cache()
 
         model.load_state_dict(running_average)
-
+        
         del pretrained_dict, running_average
         torch.cuda.empty_cache()
-
+        scheduler.step()
         # print(torch.cuda.memory_summary())
 
         print("Round:", ridx+1, "Loss:", total_loss / args.localiters / args.perround)
@@ -141,20 +143,21 @@ if __name__ == '__main__':
                     #print(i)
                     docids = test_impressions[i]['docs']
                     labels = test_impressions[i]['labels']
-                    nv_imp = []
-                    for j in docids:
-                        nv_imp.append(doc_cache[j])
+                    nv_imp = [doc_cache[j] for j in docids]
+                    #for j in docids:
+                    #    nv_imp.append(doc_cache[j])
                     nv = model.news_encoder(torch.stack(nv_imp).squeeze(1).cuda(args.device)).detach().cpu().numpy()                    
                     #nv = np.array(nv_imp)
-                    nv_hist = []                
-                    for j in test_user['click'][i]:
-                        nv_hist.append(doc_cache[j])
-                        # print(j)
+                    nv_hist = [doc_cache[j] for j in test_user['click'][i]]            
+                    #for j in test_user['click'][i]:
+                    #    nv_hist.append(doc_cache[j])
+                    #    # print(j)
                     nv_hist = model.news_encoder(torch.stack(nv_hist).squeeze(1).cuda(args.device))
                     # print("nv_hist:", nv_hist.shape)
                     uv = model.user_encoder(nv_hist.unsqueeze(0)).detach().cpu().numpy()[0]
-
+                    #score = torch.inner(nv,uv).detach().cpu().numpy()
                     score = np.dot(nv,uv)
+                    #print(len(labels), score.shape, nv.shape, uv.shape)
                     auc = roc_auc_score(labels,score)
                     mrr = mrr_score(labels,score)
                     ndcg5 = ndcg_score(labels,score,k=5)

@@ -33,13 +33,13 @@ class AttentivePooling(nn.Module):
     def fromTensorFlow(self, tfmodel):
         keras_weights = tfmodel.layers[1].get_weights()
         # print(keras_weights)
-        self.dense.weight.data = torch.tensor(keras_weights[0]).transpose(0,1)
-        self.dense.bias.data = torch.tensor(keras_weights[1])
+        self.dense.weight.data = torch.tensor(keras_weights[0]).transpose(0,1).cuda()
+        self.dense.bias.data = torch.tensor(keras_weights[1]).cuda()
 
         keras_weights = tfmodel.layers[2].get_weights()
         # print(keras_weights)
-        self.dense2.weight.data = torch.tensor(keras_weights[0]).transpose(0,1)
-        self.dense2.bias.data = torch.tensor(keras_weights[1])
+        self.dense2.weight.data = torch.tensor(keras_weights[0]).transpose(0,1).cuda()
+        self.dense2.bias.data = torch.tensor(keras_weights[1]).cuda()
 
 class Attention(nn.Module):
  
@@ -56,16 +56,18 @@ class Attention(nn.Module):
         self.WQ = nn.Linear(self.input_dim, self.output_dim, bias=False)
         self.WK = nn.Linear(self.input_dim, self.output_dim, bias=False)
         self.WV = nn.Linear(self.input_dim, self.output_dim, bias=False)
+        torch.nn.init.xavier_uniform_(self.WQ.weight, gain=np.sqrt(2))
+        torch.nn.init.xavier_uniform_(self.WK.weight, gain=np.sqrt(2))
+        torch.nn.init.xavier_uniform_(self.WV.weight, gain=np.sqrt(2))
         
-
-    def fromTensorFlow(self, tf):
+    def fromTensorFlow(self, tf, criteria = lambda l: l.name.startswith('attention')):
         for l in tf.layers:
             print(l.name, l.output_shape)
-            if l.name.startswith('attention'):
+            if criteria(l):
                 weights = l.get_weights()
-                self.WQ.weight.data = torch.tensor(weights[0].transpose())
-                self.WK.weight.data = torch.tensor(weights[1].transpose())
-                self.WV.weight.data = torch.tensor(weights[2].transpose())
+                self.WQ.weight.data = torch.tensor(weights[0].transpose()).cuda()
+                self.WK.weight.data = torch.tensor(weights[1].transpose()).cuda()
+                self.WV.weight.data = torch.tensor(weights[2].transpose()).cuda()
                 
 
  
@@ -130,7 +132,7 @@ class DocEncoder(nn.Module):
             nn.Dropout(0.2),
             # TODO: why we need the SwapTrailingAxes here?
             SwapTrailingAxes(),            
-            nn.Conv1d(300,400,3),
+            nn.Conv1d(300, 400, 3),
             nn.ReLU(),
             nn.Dropout(0.2),
             # TODO: seems here we swap the dimension back. why?
@@ -147,6 +149,41 @@ class DocEncoder(nn.Module):
             nn.Dropout(0.2),
             AttentivePooling(30,400)
         )
+
+    def fromTensorFlow(self, tfDoc):
+        print('td')
+        for l in self.phase1:
+            if 'conv' in l._get_name().lower():
+                print('conv shape:',l.weight.data.shape, l.bias.data.shape)
+            #print('\t',[p[0] for p in l.named_parameters()])
+        
+                for lt in tfDoc.layers:
+                    print(lt.name, lt.output_shape)
+                    if 'conv' in lt.name.lower():
+                        weights = lt.get_weights()
+                        l.weight.data = torch.tensor(weights[0]).transpose(0,2).cuda()
+                        l.bias.data = torch.tensor(weights[1]).cuda()
+                        #print(len(l.get_weights()), [p.shape for p in l.get_weights()])
+                        break
+                break
+
+        #for lt in tfDoc.layers:
+        #    print('tf2')
+        #    print(lt.name, lt.output_shape)
+        #    if 'attention' in lt.name:
+        # TODO: we should just pass the specific layer
+        self.attention.fromTensorFlow(tfDoc)
+
+        print('phase2')
+        for l in self.phase2:
+            if 'attentive' in l._get_name().lower():
+                for lt in tfDoc.layers:
+                    print(lt.name)
+                    if 'model' in lt.name.lower():
+                        print('copying attentive pooling')
+                        l.fromTensorFlow(lt)
+
+        
 
     
     def forward(self, x):
@@ -184,7 +221,7 @@ class UserEncoder(nn.Module):
         self.pool2 = AttentivePooling(50, 400)
         self.tail2 = VecTail(20)
         #TODO: what is batch_first?
-        self.gru2 = nn.GRU(400,400, batch_first=True)
+        self.gru2 = nn.GRU(400,400, bidirectional=False, batch_first=True)
         self.pool3 = AttentivePooling(2, 400)
 
     def forward(self, news_vecs_input):    
@@ -215,7 +252,34 @@ class UserEncoder(nn.Module):
         vec = self.pool3(user_vecs)
         # print(vec.shape)
         return vec
+
+    def fromTensorFlow(self, tfU):
+        for l in tfU.layers:
+            print(l.name, l.output_shape)
+            if l.name == 'model_1':
+                self.pool2.fromTensorFlow(l)
+            elif l.name == 'model_2':
+                self.pool3.fromTensorFlow(l)
+            elif l.name=='gru_1':                              
+                print(len(l.get_weights()), [p.shape for p in l.get_weights()])
+                weights = l.get_weights()
+                for p in self.gru2.named_parameters():
+                    s1 = p[1].data.shape
+                    if p[0] == 'weight_ih_l0':                        
+                        p[1].data = torch.tensor(weights[0]).transpose(0,1).contiguous().cuda()
+                    elif p[0] == 'weight_hh_l0':
+                        p[1].data = torch.tensor(weights[1]).transpose(0,1).contiguous().cuda()
+                    elif p[0] == 'bias_ih_l0':
+                        p[1].data = torch.tensor(weights[2]).cuda()
+                    elif p[0] == 'bias_hh_l0':
+                        p[1].data = torch.zeros(p[1].data.shape).cuda()
+                    print(p[0], s1, p[1].shape)
+        self.attention2.fromTensorFlow(tfU)
+        # TODO: GRU
         
+            
+
+
 class TimeDistributed(nn.Module):    
     def __init__(self, module): #, batch_first=False):
         super(TimeDistributed, self).__init__()
@@ -232,7 +296,7 @@ class TimeDistributed(nn.Module):
           output_t = self.module(x[:, i, :, :])
           output_t  = output_t.unsqueeze(1)
           output = torch.cat((output, output_t ), 1)
-        # print('TimeDist_output', output.size())
+          # print('TimeDist_output', output.size())
         return output
         # # Squash samples and timesteps into a single axis
         # x_reshape = x.contiguous().view(x.size(0), -1, x.size(-1))  # (samples * timesteps, input_size)
