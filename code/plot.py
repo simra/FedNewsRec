@@ -6,6 +6,8 @@ metrics = []
 # 'FedRec-woLDP-1.json'
 with open(sys.argv[1], 'r', encoding='utf-8') as f:
     for l in f:
+        if 'py' in l:
+            continue
         #metrics.append(json.loads(l))
         metrics.append(list(map(float,l.strip().split('\t'))))
 

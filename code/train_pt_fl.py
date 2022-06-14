@@ -12,11 +12,12 @@ from utils import evaluate, dcg_score, ndcg_score, mrr_score
 from tqdm import tqdm 
 from datetime import datetime
 import sys
-
-#root_data_path = '../../DP-REC/data' # MIND-Dataset Path
-#embedding_path = '../../DP-REC/wordvec' # Word Embedding Path
-root_data_path = '/home/rsim/MIND' # MIND-Dataset Path
-embedding_path = '/home/rsim/GLOVE' # Word Embedding Path
+import os
+import json
+import ray
+from ray import tune
+from ray.tune import CLIReporter
+from ray.tune.trial import Trial
 
 
 # note: this loss function requires softmax on the model output
@@ -24,20 +25,11 @@ def loss_fn(y_pred, y_true):
     #print(y_pred.shape, y_true.shape)
     return (-torch.clamp(y_pred,min=1e-10).log() * y_true).sum(dim=1).mean()
 
-
-
-if __name__ == '__main__':
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--batchsize', type=int, default=64)
-    parser.add_argument('--localiters', type=int, default=1)
-    parser.add_argument('--lr', type=float, default=0.1)
-    parser.add_argument('--lmb', type=float, default=0)
-    parser.add_argument('--checkpoint', type=int, default=25)
-    parser.add_argument('--device', type=int, default=0)
-    parser.add_argument('--perround', type=int, default=6)
-    parser.add_argument('--rounds', type=int, default=1)
-    args = parser.parse_args()
+#@ray.remote(num_gpus=1)
+def main(args):
+    print(vars(args))
+    root_data_path = args.data_path
+    embedding_path = args.embedding_path
 
     news,news_index,category_dict,subcategory_dict,word_dict = read_news(root_data_path,['train','val'])
     news_title,news_vert,news_subvert=get_doc_input(news,news_index,category_dict,subcategory_dict,word_dict)
@@ -61,10 +53,15 @@ if __name__ == '__main__':
     #criterion = loss_fn
 
     # print(torch.cuda.memory_summary())
-    print('Using GPU:', torch.cuda.is_available())
-    metrics_fn = f'metrics_{datetime.now().strftime("%y%m%d%H%M%S")}.tsv'
+    print('Using GPU:', torch.cuda.is_available(), torch.cuda.current_device())
+    os.makedirs(args.output_path, exist_ok=True)
+    if args.metrics_format == 'date':
+        metrics_fn = os.path.join(args.output_path, f'metrics_{datetime.now().strftime("%y%m%d%H%M%S")}.tsv')
+    else:
+        metrics_fn = os.path.join(args.output_path, f'metrics_{args.lr}_{args.gamma}_{args.lmb}_{args.perround}_{args.rounds}.tsv')
     with open(metrics_fn, 'w', encoding='utf-8') as f:
-        f.write(' '.join(sys.argv)+'\n')
+        #f.write(' '.join(sys.argv)+'\n')
+        f.write(json.dumps(vars(args))+'\n')
 
     # doc cache
     doc_cache = []
@@ -72,7 +69,8 @@ if __name__ == '__main__':
     for j in range(len(news_title)):
         doc_cache.append(torch.from_numpy(np.array([news_title[j]])))
 
-
+    metrics_keys = ['auc', 'mrr', 'ndcg@5', 'ndcg@10']
+    metrics = dict(zip(metrics_keys, [0,0,0,0]))
     for ridx in range(args.rounds): #tqdm(range(args.rounds)):
         random_index = np.random.permutation(len(train_uid_table))[:args.perround]
         pretrained_dict = model.state_dict()
@@ -101,8 +99,8 @@ if __name__ == '__main__':
                     with torch.no_grad():
                         print('model output:', output.detach().cpu().numpy(), label.detach().cpu().numpy())
                         for _ in range(3):
-                            print('other model output:', model(click, sample)[0].detach().cpu().numpy())                    
-                    exit()
+                            print('other model output:', model(click, sample)[0].detach().cpu().numpy())                                        
+                    return metrics
                 loss.backward()
                 optimizer.step()
                 optimizer.zero_grad()
@@ -127,7 +125,7 @@ if __name__ == '__main__':
 
         print("Round:", ridx+1, "Loss:", total_loss / args.localiters / args.perround)
         sys.stdout.flush()
-
+        
         if (ridx + 1) % args.checkpoint == 0:
             print('running test metrics')
             model.eval()
@@ -168,19 +166,76 @@ if __name__ == '__main__':
                     nDCG5.append(ndcg5)
                     nDCG10.append(ndcg10)
                 print()
-                metrics_out = [np.mean(AUC), np.mean(MRR), np.mean(nDCG5), np.mean(nDCG10)]
+                metrics_out = [np.mean(AUC), np.mean(MRR), np.mean(nDCG5), np.mean(nDCG10)]                
                 metric_str = '\t'.join(map(str,metrics_out))
                 out_str = f"{(ridx+1)*args.perround}\t{metric_str}\t{total_loss / args.localiters / args.perround}"
                 print(out_str)
                 with open(metrics_fn, 'a', encoding='utf-8') as f:
                     f.write(out_str+"\n")
-                
-"""
-            news_encodings = []
-            for title in news_title:
-                title = torch.from_numpy(np.array([title])).cuda()
-                news_encodings.append(model.news_encoder(title).cpu())
-            user_encodings = model.user_encoder(news_encodings[test_user['click'][:args.batchsize]])
-            result = evaluate(user_encodings, news_encodings, test_impressions)
-            print("Test Log:", result)
-"""
+                if metrics_out[0]>metrics['auc']:
+                    metrics = dict(zip(metrics_keys,metrics_out))
+    return metrics
+
+def ray_helper(args):
+    # convert ray dict to namespace
+    args = argparse.Namespace(**args)
+    metrics = main(args)
+    ray.tune.report(**metrics)
+
+class TrialTerminationReporter(CLIReporter):
+    def __init__(self, max_progress_rows=100):
+        super(TrialTerminationReporter, self).__init__(max_progress_rows)
+        self.num_terminated = 0
+
+    def should_report(self, trials, done=False):
+        """Reports only on trial termination events."""
+        old_num_terminated = self.num_terminated
+        self.num_terminated = len([t for t in trials if t.status == Trial.TERMINATED])
+        return self.num_terminated > old_num_terminated or done
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--batchsize', type=int, default=64)
+    parser.add_argument('--localiters', type=int, default=1)
+    parser.add_argument('--lr', type=float, default=0.1)
+    parser.add_argument('--gamma', type=float, default=1.0)
+    parser.add_argument('--lmb', type=float, default=0)
+    parser.add_argument('--checkpoint', type=int, default=25)
+    #parser.add_argument('--device', type=int, default=None, required=False)
+    parser.add_argument('--perround', type=int, default=6)
+    parser.add_argument('--rounds', type=int, default=1)
+    parser.add_argument('--data_path', default='/home/rsim/MIND') 
+    parser.add_argument('--embedding_path', default='/home/rsim/GLOVE')     
+    parser.add_argument('--output_path', default='.')
+    parser.add_argument('--sweep', required=False, help='path to ray sweep config')
+    parser.add_argument('--metrics_format', default='date', choices=['date', 'config'], help='whether for format the metrics filename by date or configuration')
+    args = parser.parse_args()
+
+    #if args.device is None and torch.cuda.is_available():
+    #    args.device=torch.cuda.current_device() 
+    device = -1
+    if torch.cuda.is_available():
+        device = torch.cuda.current_device()
+    setattr(args,'device', device)
+
+    torch.cuda.set_device(args.device)
+    
+    if args.sweep is None:
+        main(args)
+    else:
+        ray.init()
+        # TODO: data loading can happen once, globally. In most cases we will run one job per process, but it might be useful to support multiple jobs per process.       
+        with open(args.sweep, 'r', encoding='utf-8') as inF:
+            sweep = json.load(inF)
+
+        sweep_config=vars(args)
+
+        for k in sweep:
+            sweep_config[k] = tune.grid_search(sweep[k])
+
+        batch_job = tune.run(
+            ray_helper,
+            config=sweep_config,
+            resources_per_trial={'gpu': 1},
+            progress_reporter=TrialTerminationReporter()
+        )
