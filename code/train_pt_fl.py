@@ -69,8 +69,8 @@ def main(args):
     for j in range(len(news_title)):
         doc_cache.append(torch.from_numpy(np.array([news_title[j]])))
 
-    metrics_keys = ['auc', 'mrr', 'ndcg@5', 'ndcg@10']
-    metrics = dict(zip(metrics_keys, [0,0,0,0]))
+    metrics_keys = ['total_clients', 'auc', 'mrr', 'ndcg@5', 'ndcg@10']
+    metrics = dict(zip(metrics_keys, [0, 0, 0, 0, 0]))
     for ridx in range(args.rounds): #tqdm(range(args.rounds)):
         random_index = np.random.permutation(len(train_uid_table))[:args.perround]
         pretrained_dict = model.state_dict()
@@ -166,9 +166,10 @@ def main(args):
                     nDCG5.append(ndcg5)
                     nDCG10.append(ndcg10)
                 print()
-                metrics_out = [np.mean(AUC), np.mean(MRR), np.mean(nDCG5), np.mean(nDCG10)]                
+                total_clients = (ridx+1)*args.perround
+                metrics_out = [total_clients, np.mean(AUC), np.mean(MRR), np.mean(nDCG5), np.mean(nDCG10)]                
                 metric_str = '\t'.join(map(str,metrics_out))
-                out_str = f"{(ridx+1)*args.perround}\t{metric_str}\t{total_loss / args.localiters / args.perround}"
+                out_str = f"{total_clients}\t{metric_str}\t{total_loss / args.localiters / args.perround}"
                 print(out_str)
                 with open(metrics_fn, 'a', encoding='utf-8') as f:
                     f.write(out_str+"\n")
@@ -184,13 +185,13 @@ def ray_helper(args):
 
 class TrialTerminationReporter(CLIReporter):
     def __init__(self, max_progress_rows=100):
-        super(TrialTerminationReporter, self).__init__(max_progress_rows)
-        self.num_terminated = 0
+        super(TrialTerminationReporter, self).__init__(max_progress_rows=max_progress_rows)
+        self.num_terminated = 0        
 
     def should_report(self, trials, done=False):
         """Reports only on trial termination events."""
         old_num_terminated = self.num_terminated
-        self.num_terminated = len([t for t in trials if t.status == Trial.TERMINATED])
+        self.num_terminated = len([t for t in trials if t.status == Trial.TERMINATED])        
         return self.num_terminated > old_num_terminated or done
 
 if __name__ == '__main__':
