@@ -17,3 +17,9 @@
 - fl\_training.py: containing codes for federated model training
 - Example.ipynb: containing codes for model training and evaluation
 
+# TODO
+
+- AML runs
+- hyperparameter search via ray library
+- FLUTE integration
+- Gaussian mechanism

@@ -22,7 +22,7 @@ config = {
     'delta': 0.05,
     'lambd': 0,
     'num': 6,
-    'optimizer': 'SGD'
+    'optimizer': 'sgd'
     }
 parser = ArgumentParser()
 parser.add_argument('--lr', help='Learning rate', required=False, type=float)
