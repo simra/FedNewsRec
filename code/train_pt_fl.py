@@ -20,6 +20,7 @@ from ray.tune import CLIReporter
 from ray.tune.trial import Trial
 from prv_accountant import Accountant
 from functools import reduce
+from copy import deepcopy
 
 
 # note: this loss function requires softmax on the model output
@@ -74,16 +75,17 @@ def main(args):
     metrics_keys = ['auc', 'mrr', 'ndcg@5', 'ndcg@10']
     metrics = dict(zip(metrics_keys, [0,0,0,0]))
     # TODO: we need to change 50000 to an input argument
-    accountant = Accountant(
-            noise_multiplier=args.noise_multiplier,
-            sampling_probability=args.perround/50000,
-            delta=args.delta,
-            eps_error=0.1,
-            max_compositions=50000
-    )
+    if args.noise_multiplier > 0.:
+        accountant = Accountant(
+                noise_multiplier=args.noise_multiplier,
+                sampling_probability=args.perround/50000,
+                delta=args.delta,
+                eps_error=0.1,
+                max_compositions=50000
+        )
     for ridx in range(args.rounds): #tqdm(range(args.rounds)):
         random_index = np.random.permutation(len(train_uid_table))[:args.perround]
-        pretrained_dict = model.state_dict()
+        pretrained_dict = deepcopy(model.state_dict())
         running_average = None # model.state_dict()
         total_loss = 0.
 
@@ -129,15 +131,15 @@ def main(args):
             del click, sample, label
             torch.cuda.empty_cache()
 
-        updated_dict = {layer: pretrained_dict[layer] + running_average[layer] for layer in running_average}
         if args.clip_norm != float('inf'):
-            update_norm = torch.sqrt(reduce(lambda a, b: a + torch.square(torch.norm(b, p=2)), updated_dict.values(), 0.))
+            update_norm = torch.sqrt(reduce(lambda a, b: a + torch.square(torch.norm(b, p=2)), running_average.values(), 0.))
             print("Update norm:", update_norm)
             if update_norm > args.clip_norm:
                 scale = args.clip_norm / update_norm
-                updated_dict = {layer: scale * updated_dict[layer] for layer in updated_dict}
+                running_average = {layer: scale * running_average[layer] for layer in running_average}
         if args.noise_multiplier > 0:
-            updated_dict = {layer: updated_dict[layer] + torch.normal(mean=torch.zeros_like(updated_dict[layer]), std=args.noise_multiplier*args.clip_norm*torch.ones_like(updated_dict[layer])) for layer in updated_dict}
+            running_average = {layer: running_average[layer] + torch.normal(mean=torch.zeros_like(running_average[layer]), std=args.noise_multiplier*args.clip_norm*torch.ones_like(running_average[layer])) for layer in running_average}
+        updated_dict = {layer: pretrained_dict[layer] + running_average[layer] for layer in running_average}
         model.load_state_dict(updated_dict)
         
         del pretrained_dict, running_average
@@ -145,8 +147,10 @@ def main(args):
         scheduler.step()
         # print(torch.cuda.memory_summary())
 
-        eps_low, eps_estimate, eps_upper = accountant.compute_epsilon(num_compositions=ridx+1)
-        print("Round:", ridx+1, "Loss:", total_loss / args.localiters / args.perround, "Epsilon:", eps_estimate)
+        print("Round:", ridx+1, "Loss:", total_loss / args.localiters / args.perround)
+        if args.noise_multiplier > 0.:
+            eps_low, eps_estimate, eps_upper = accountant.compute_epsilon(num_compositions=ridx+1)
+            print("Epsilon:", eps_estimate)
         sys.stdout.flush()
         
         if (ridx + 1) % args.checkpoint == 0:
