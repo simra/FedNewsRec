@@ -50,7 +50,7 @@ def main(args):
 
     model = FedNewsRec(title_word_embedding_matrix).cuda(args.device)
     optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.lmb)
-    scheduler = lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.99)
+    # scheduler = lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.99)
     #optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.lmb)
     criterion = nn.CrossEntropyLoss()
     #criterion = loss_fn
@@ -144,7 +144,7 @@ def main(args):
         
         del pretrained_dict, running_average
         torch.cuda.empty_cache()
-        scheduler.step()
+        # scheduler.step()
         # print(torch.cuda.memory_summary())
 
         print("Round:", ridx+1, "Loss:", total_loss / args.localiters / args.perround)
