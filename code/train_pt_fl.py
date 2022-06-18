@@ -18,6 +18,9 @@ import ray
 from ray import tune
 from ray.tune import CLIReporter
 from ray.tune.trial import Trial
+from prv_accountant import Accountant
+from functools import reduce
+from copy import deepcopy
 
 
 # note: this loss function requires softmax on the model output
@@ -71,10 +74,19 @@ def main(args):
 
     metrics_keys = ['auc', 'mrr', 'ndcg@5', 'ndcg@10']
     metrics = dict(zip(metrics_keys, [0,0,0,0]))
+    # TODO: we need to change 50000 to an input argument
+    if args.noise_multiplier > 0.:
+        accountant = Accountant(
+                noise_multiplier=args.noise_multiplier,
+                sampling_probability=args.perround/50000,
+                delta=args.delta,
+                eps_error=0.1,
+                max_compositions=50000
+        )
     for ridx in range(args.rounds): #tqdm(range(args.rounds)):
         random_index = np.random.permutation(len(train_uid_table))[:args.perround]
-        pretrained_dict = model.state_dict()
-        running_average = model.state_dict()
+        pretrained_dict = deepcopy(model.state_dict())
+        running_average = None # model.state_dict()
         total_loss = 0.
 
         model.train()        
@@ -109,14 +121,26 @@ def main(args):
 
             # TODO: keep track of the differences
             update = {layer: (model.state_dict()[layer] - pretrained_dict[layer]) for layer in pretrained_dict}
-            running_average = {layer: running_average[layer] + update[layer] / args.perround for layer in update}
+            if running_average is None:
+                running_average = {layer: update[layer] / args.perround for layer in update}
+            else:
+                running_average = {layer: running_average[layer] + update[layer] / args.perround for layer in update}
             # TODO: reset model weights
             model.load_state_dict(pretrained_dict)
 
             del click, sample, label
             torch.cuda.empty_cache()
 
-        model.load_state_dict(running_average)
+        if args.clip_norm != float('inf'):
+            update_norm = torch.sqrt(reduce(lambda a, b: a + torch.square(torch.norm(b, p=2)), running_average.values(), 0.))
+            print("Update norm:", update_norm)
+            if update_norm > args.clip_norm:
+                scale = args.clip_norm / update_norm
+                running_average = {layer: scale * running_average[layer] for layer in running_average}
+        if args.noise_multiplier > 0:
+            running_average = {layer: running_average[layer] + torch.normal(mean=torch.zeros_like(running_average[layer]), std=args.noise_multiplier*args.clip_norm*torch.ones_like(running_average[layer])) for layer in running_average}
+        updated_dict = {layer: pretrained_dict[layer] + running_average[layer] for layer in running_average}
+        model.load_state_dict(updated_dict)
         
         del pretrained_dict, running_average
         torch.cuda.empty_cache()
@@ -124,6 +148,9 @@ def main(args):
         # print(torch.cuda.memory_summary())
 
         print("Round:", ridx+1, "Loss:", total_loss / args.localiters / args.perround)
+        if args.noise_multiplier > 0.:
+            eps_low, eps_estimate, eps_upper = accountant.compute_epsilon(num_compositions=ridx+1)
+            print("Epsilon:", eps_estimate)
         sys.stdout.flush()
         
         if (ridx + 1) % args.checkpoint == 0:
@@ -170,6 +197,7 @@ def main(args):
                 metric_str = '\t'.join(map(str,metrics_out))
                 out_str = f"{(ridx+1)*args.perround}\t{metric_str}\t{total_loss / args.localiters / args.perround}"
                 print(out_str)
+                # print('eps:', accountant.compute_epsilon(num_compositions=ridx+1))
                 with open(metrics_fn, 'a', encoding='utf-8') as f:
                     f.write(out_str+"\n")
                 if metrics_out[0]>metrics['auc']:
@@ -204,11 +232,14 @@ if __name__ == '__main__':
     #parser.add_argument('--device', type=int, default=None, required=False)
     parser.add_argument('--perround', type=int, default=6)
     parser.add_argument('--rounds', type=int, default=1)
-    parser.add_argument('--data_path', default='/home/rsim/MIND') 
-    parser.add_argument('--embedding_path', default='/home/rsim/GLOVE')     
+    parser.add_argument('--data_path', default='/mnt/fednewsrec/data') 
+    parser.add_argument('--embedding_path', default='/mnt/fednewsrec/wordvec')     
     parser.add_argument('--output_path', default='.')
     parser.add_argument('--sweep', required=False, help='path to ray sweep config')
     parser.add_argument('--metrics_format', default='date', choices=['date', 'config'], help='whether for format the metrics filename by date or configuration')
+    parser.add_argument('--noise_multiplier', type=float, default=0.)
+    parser.add_argument('--clip_norm', type=float, default=float('inf'))
+    parser.add_argument('--delta', type=float, default=0.)
     args = parser.parse_args()
 
     #if args.device is None and torch.cuda.is_available():
