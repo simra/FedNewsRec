@@ -1,7 +1,6 @@
 import argparse
-from fl_training import GetUserDataFunc
-from preprecoess import get_doc_input, get_test_input, get_train_input, load_matrix, parse_user, read_clickhistory, read_news
-from model_pt import FedNewsRec
+from preprocess import GetUserDataFunc, get_doc_input, get_test_input, get_train_input, load_matrix, parse_user, read_clickhistory, read_news
+from model import FedNewsRec
 import numpy as np
 from sklearn.metrics import roc_auc_score
 import torch
@@ -99,7 +98,22 @@ def main(args):
                 del output
                 torch.cuda.empty_cache()
 
-            update = {layer: (model.state_dict()[layer] - pretrained_dict[layer]) for layer in pretrained_dict}
+            update = {layer: model.state_dict()[layer] - pretrained_dict[layer] for layer in pretrained_dict}
+            if args.clip_norm != float('inf'):
+                update_norm = torch.sqrt(reduce(lambda a, b: a + torch.square(torch.norm(b, p=2)), update.values(), 0.))
+                # print("Update norm:", update_norm)
+                if update_norm > args.clip_norm:
+                    scale = args.clip_norm / update_norm
+                    update = {layer: scale * update[layer] for layer in update}
+            if args.quantize_scale != -1.:
+                update = {layer: torch.round(args.quantize_scale * update[layer]) for layer in update}
+            # TODO: add noise
+            if args.noise_multiplier != -1.:
+                raise NotImplementedError('Add skellam mechanism here')
+            # TODO: modular clipping
+            if args.bitwidth != -1:
+                # TODO: we need to translate this to the positive half axis
+                update = {layer: (torch.remainder(update[layer] + 2**(args.bandwidth-1), 2**args.bitwidth) - 2**(args.bandwidth-1)) / args.quantize_scale for layer in update} 
             if running_average is None:
                 running_average = {layer: update[layer] / args.perround for layer in update}
             else:
@@ -109,6 +123,7 @@ def main(args):
             del click, sample, label
             torch.cuda.empty_cache()
 
+        """
         if args.clip_norm != float('inf'):
             update_norm = torch.sqrt(reduce(lambda a, b: a + torch.square(torch.norm(b, p=2)), running_average.values(), 0.))
             print("Update norm:", update_norm)
@@ -117,6 +132,7 @@ def main(args):
                 running_average = {layer: scale * running_average[layer] for layer in running_average}
         if args.noise_multiplier > 0:
             running_average = {layer: running_average[layer] + torch.normal(mean=torch.zeros_like(running_average[layer]), std=args.noise_multiplier*args.clip_norm*torch.ones_like(running_average[layer])) for layer in running_average}
+        """
         updated_dict = {layer: pretrained_dict[layer] + running_average[layer] for layer in running_average}
         model.load_state_dict(updated_dict)
         
@@ -202,10 +218,14 @@ if __name__ == '__main__':
     parser.add_argument('--output_path', default='.')
     parser.add_argument('--sweep', required=False, help='path to ray sweep config')
     parser.add_argument('--metrics_format', default='date', choices=['date', 'config'], help='whether for format the metrics filename by date or configuration')
-    parser.add_argument('--noise_multiplier', type=float, default=0.)
-    parser.add_argument('--clip_norm', type=float, default=float('inf'))
-    parser.add_argument('--delta', type=float, default=0.)
+    parser.add_argument('--noise_multiplier', type=float, default=0., help='local noise multiplier')
+    parser.add_argument('--clip_norm', type=float, default=float('inf'), help='L2 clip norm for distributed DP mechanism')
+    parser.add_argument('--delta', type=float, default=1e-3, help='delta in (eps, delta)-DP')
+    parser.add_argument('--quantize_scale', type=float, default=-1., help='quantize_scale in secure aggregation')
+    parser.add_argument('--bitwidth', type=int, default=-1, help='bitwidth to transmit the local updates')
     args = parser.parse_args()
+
+    # assert (quantize_scale == -1.) != (bitwidth == -1), 'quantize_scale and bitwidth must both be -1 or not -1 simultaneously to guarantee correctness.'
 
     #if args.device is None and torch.cuda.is_available():
     #    args.device=torch.cuda.current_device() 

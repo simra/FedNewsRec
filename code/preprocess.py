@@ -14,6 +14,23 @@ MAX_SENTENCE = 30
 MAX_ALL = 50
 npratio = 4
 
+def GetUserDataFunc(news_title,train_user_id_sample,train_user,train_sess,train_label,train_user_id):
+    def _get_user_data(uid):
+        click = []
+        sample = []
+        label = []
+        for sid in train_user_id_sample[uid]:
+            click.append(train_user['click'][train_user_id[sid]])
+            sample.append(train_sess[sid])
+            label.append(train_label[sid])
+        click = np.array(click)
+        sample = np.array(sample)
+        label = np.array(label)
+        click = news_title[click]
+        sample = news_title[sample]        
+        return click,sample,label
+    return _get_user_data
+
 def newsample(nnn,ratio):
     if ratio >len(nnn):
         return random.sample(nnn*(ratio//len(nnn)+1),ratio)
