@@ -173,8 +173,9 @@ def main(args):
                 print(out_str)
                 with open(metrics_fn, 'a', encoding='utf-8') as f:
                     f.write(out_str+"\n")
-                if metrics_out[0]>metrics['auc']:
-                    metrics = dict(zip(metrics_keys,metrics_out))
+                metrics_out = dict(zip(metrics_keys,metrics_out))
+                if metrics_out['auc']>metrics['auc']:
+                    metrics = metrics_out
     return metrics
 
 def ray_helper(args):

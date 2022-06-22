@@ -21,5 +21,13 @@
 
 - AML runs
 - hyperparameter search via ray library
+    - Current search at 2000 rounds:
+    {
+    "lr": [0.1, 0.01, 0.001, 0.0001],
+    "gamma": [1.0, 0.99, 0.999],
+    "lmb": [0.01, 0.001, 0.0001]    
+    }
+    - add lmb=0, run for longer.
+    
 - FLUTE integration
 - Gaussian mechanism
