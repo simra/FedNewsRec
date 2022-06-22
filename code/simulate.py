@@ -1,13 +1,11 @@
 import argparse
-from fl_training import GetUserDataFunc
-from preprecoess import get_doc_input, get_test_input, get_train_input, load_matrix, parse_user, read_clickhistory, read_news
-from model_pt import FedNewsRec
+from preprocess import GetUserDataFunc, get_doc_input, get_test_input, get_train_input, load_matrix, parse_user, read_clickhistory, read_news
+from model import FedNewsRec
 import numpy as np
 from sklearn.metrics import roc_auc_score
 import torch
 from torch import nn, optim
 from torch.optim import lr_scheduler
-# from torchsummary import summary
 from utils import evaluate, dcg_score, ndcg_score, mrr_score
 from tqdm import tqdm 
 from datetime import datetime
@@ -18,12 +16,9 @@ import ray
 from ray import tune
 from ray.tune import CLIReporter
 from ray.tune.trial import Trial
-
-
-# note: this loss function requires softmax on the model output
-def loss_fn(y_pred, y_true):
-    #print(y_pred.shape, y_true.shape)
-    return (-torch.clamp(y_pred,min=1e-10).log() * y_true).sum(dim=1).mean()
+from prv_accountant import Accountant
+from functools import reduce
+from copy import deepcopy
 
 #@ray.remote(num_gpus=1)
 def main(args):
@@ -42,17 +37,10 @@ def main(args):
     test_impressions, test_userids = get_test_input(test_session,news_index)
     get_user_data = GetUserDataFunc(news_title,train_user_id_sample,train_user,train_sess,train_label,train_user_id)
 
-    # print(news_title.shape)
-    # news_title = torch.from_numpy(news_title).cuda()
-
     model = FedNewsRec(title_word_embedding_matrix).cuda(args.device)
     optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.lmb)
-    scheduler = lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.99)
-    #optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.lmb)
     criterion = nn.CrossEntropyLoss()
-    #criterion = loss_fn
 
-    # print(torch.cuda.memory_summary())
     print('Using GPU:', torch.cuda.is_available(), torch.cuda.current_device())
     os.makedirs(args.output_path, exist_ok=True)
     if args.metrics_format == 'date':
@@ -60,7 +48,6 @@ def main(args):
     else:
         metrics_fn = os.path.join(args.output_path, f'metrics_{args.lr}_{args.gamma}_{args.lmb}_{args.perround}_{args.rounds}.tsv')
     with open(metrics_fn, 'w', encoding='utf-8') as f:
-        #f.write(' '.join(sys.argv)+'\n')
         f.write(json.dumps(vars(args))+'\n')
 
     # doc cache
@@ -71,10 +58,19 @@ def main(args):
 
     metrics_keys = ['total_clients', 'auc', 'mrr', 'ndcg@5', 'ndcg@10']
     metrics = dict(zip(metrics_keys, [0, 0, 0, 0, 0]))
-    for ridx in range(args.rounds): #tqdm(range(args.rounds)):
+    # TODO: we need to change 50000 to an input argument
+    if args.noise_multiplier > 0.:
+        accountant = Accountant(
+                noise_multiplier=args.noise_multiplier,
+                sampling_probability=args.perround/50000,
+                delta=args.delta,
+                eps_error=0.1,
+                max_compositions=50000
+        )
+    for ridx in range(args.rounds):
         random_index = np.random.permutation(len(train_uid_table))[:args.perround]
-        pretrained_dict = model.state_dict()
-        running_average = model.state_dict()
+        pretrained_dict = deepcopy(model.state_dict())
+        running_average = None
         total_loss = 0.
 
         model.train()        
@@ -82,19 +78,14 @@ def main(args):
             uid = train_uid_table[uidx]
             click, sample, label = get_user_data(uid)
             click = torch.from_numpy(click).cuda(args.device)
-            # print(click.shape)
             sample = torch.from_numpy(sample).cuda(args.device)
-            label = torch.from_numpy(label).cuda(args.device) #type(torch.LongTensor).cuda(args.device)
+            label = torch.from_numpy(label).cuda(args.device)
 
             for itr in range(args.localiters):
                 output, _ = model(click, sample)
-                #print(output.shape, label.shape, label.detach().cpu().numpy())
-                # print(output.cpu().detach().numpy(), label.cpu().detach().numpy())# output.item(), label.item())
-                # TODO: check the labels are used in the right way
-                loss = criterion(output, label) #torch.max(label, 1)[1])
+                loss = criterion(output, label)
                 total_loss += loss.item()
                 if total_loss / args.localiters / args.perround > 1e6:
-                # if np.isnan(total_loss):     
                     model.eval()               
                     with torch.no_grad():
                         print('model output:', output.detach().cpu().numpy(), label.detach().cpu().numpy())
@@ -107,23 +98,51 @@ def main(args):
                 del output
                 torch.cuda.empty_cache()
 
-            # TODO: keep track of the differences
-            update = {layer: (model.state_dict()[layer] - pretrained_dict[layer]) for layer in pretrained_dict}
-            running_average = {layer: running_average[layer] + update[layer] / args.perround for layer in update}
-            # TODO: reset model weights
+            update = {layer: model.state_dict()[layer] - pretrained_dict[layer] for layer in pretrained_dict}
+            if args.clip_norm != float('inf'):
+                update_norm = torch.sqrt(reduce(lambda a, b: a + torch.square(torch.norm(b, p=2)), update.values(), 0.))
+                # print("Update norm:", update_norm)
+                if update_norm > args.clip_norm:
+                    scale = args.clip_norm / update_norm
+                    update = {layer: scale * update[layer] for layer in update}
+            if args.quantize_scale != -1.:
+                update = {layer: torch.round(args.quantize_scale * update[layer]) for layer in update}
+            # TODO: add noise
+            if args.noise_multiplier != -1.:
+                raise NotImplementedError('Add skellam mechanism here')
+            # TODO: modular clipping
+            if args.bitwidth != -1:
+                # TODO: we need to translate this to the positive half axis
+                update = {layer: (torch.remainder(update[layer] + 2**(args.bandwidth-1), 2**args.bitwidth) - 2**(args.bandwidth-1)) / args.quantize_scale for layer in update} 
+            if running_average is None:
+                running_average = {layer: update[layer] / args.perround for layer in update}
+            else:
+                running_average = {layer: running_average[layer] + update[layer] / args.perround for layer in update}
             model.load_state_dict(pretrained_dict)
 
             del click, sample, label
             torch.cuda.empty_cache()
 
-        model.load_state_dict(running_average)
+        """
+        if args.clip_norm != float('inf'):
+            update_norm = torch.sqrt(reduce(lambda a, b: a + torch.square(torch.norm(b, p=2)), running_average.values(), 0.))
+            print("Update norm:", update_norm)
+            if update_norm > args.clip_norm:
+                scale = args.clip_norm / update_norm
+                running_average = {layer: scale * running_average[layer] for layer in running_average}
+        if args.noise_multiplier > 0:
+            running_average = {layer: running_average[layer] + torch.normal(mean=torch.zeros_like(running_average[layer]), std=args.noise_multiplier*args.clip_norm*torch.ones_like(running_average[layer])) for layer in running_average}
+        """
+        updated_dict = {layer: pretrained_dict[layer] + running_average[layer] for layer in running_average}
+        model.load_state_dict(updated_dict)
         
         del pretrained_dict, running_average
         torch.cuda.empty_cache()
-        scheduler.step()
-        # print(torch.cuda.memory_summary())
 
         print("Round:", ridx+1, "Loss:", total_loss / args.localiters / args.perround)
+        if args.noise_multiplier > 0.:
+            eps_low, eps_estimate, eps_upper = accountant.compute_epsilon(num_compositions=ridx+1)
+            print("Epsilon:", eps_estimate)
         sys.stdout.flush()
         
         if (ridx + 1) % args.checkpoint == 0:
@@ -138,24 +157,14 @@ def main(args):
                     if i%10000==0:
                         print('.', end='') 
                         sys.stdout.flush()
-                    #print(i)
                     docids = test_impressions[i]['docs']
                     labels = test_impressions[i]['labels']
                     nv_imp = [doc_cache[j] for j in docids]
-                    #for j in docids:
-                    #    nv_imp.append(doc_cache[j])
                     nv = model.news_encoder(torch.stack(nv_imp).squeeze(1).cuda(args.device)).detach().cpu().numpy()                    
-                    #nv = np.array(nv_imp)
                     nv_hist = [doc_cache[j] for j in test_user['click'][i]]            
-                    #for j in test_user['click'][i]:
-                    #    nv_hist.append(doc_cache[j])
-                    #    # print(j)
                     nv_hist = model.news_encoder(torch.stack(nv_hist).squeeze(1).cuda(args.device))
-                    # print("nv_hist:", nv_hist.shape)
                     uv = model.user_encoder(nv_hist.unsqueeze(0)).detach().cpu().numpy()[0]
-                    #score = torch.inner(nv,uv).detach().cpu().numpy()
                     score = np.dot(nv,uv)
-                    #print(len(labels), score.shape, nv.shape, uv.shape)
                     auc = roc_auc_score(labels,score)
                     mrr = mrr_score(labels,score)
                     ndcg5 = ndcg_score(labels,score,k=5)
@@ -206,12 +215,19 @@ if __name__ == '__main__':
     #parser.add_argument('--device', type=int, default=None, required=False)
     parser.add_argument('--perround', type=int, default=6)
     parser.add_argument('--rounds', type=int, default=1)
-    parser.add_argument('--data_path', default='/home/rsim/MIND') 
-    parser.add_argument('--embedding_path', default='/home/rsim/GLOVE')     
+    parser.add_argument('--data_path', default='/mnt/fednewsrec/data') 
+    parser.add_argument('--embedding_path', default='/mnt/fednewsrec/wordvec')     
     parser.add_argument('--output_path', default='.')
     parser.add_argument('--sweep', required=False, help='path to ray sweep config')
     parser.add_argument('--metrics_format', default='date', choices=['date', 'config'], help='whether for format the metrics filename by date or configuration')
+    parser.add_argument('--noise_multiplier', type=float, default=0., help='local noise multiplier')
+    parser.add_argument('--clip_norm', type=float, default=float('inf'), help='L2 clip norm for distributed DP mechanism')
+    parser.add_argument('--delta', type=float, default=1e-3, help='delta in (eps, delta)-DP')
+    parser.add_argument('--quantize_scale', type=float, default=-1., help='quantize_scale in secure aggregation')
+    parser.add_argument('--bitwidth', type=int, default=-1, help='bitwidth to transmit the local updates')
     args = parser.parse_args()
+
+    # assert (quantize_scale == -1.) != (bitwidth == -1), 'quantize_scale and bitwidth must both be -1 or not -1 simultaneously to guarantee correctness.'
 
     #if args.device is None and torch.cuda.is_available():
     #    args.device=torch.cuda.current_device() 
