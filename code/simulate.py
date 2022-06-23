@@ -27,16 +27,16 @@ def main(args):
     root_data_path = args.data_path
     embedding_path = args.embedding_path
 
-    news,news_index,category_dict,subcategory_dict,word_dict = read_news(root_data_path,['train','val'])
-    news_title,news_vert,news_subvert=get_doc_input(news,news_index,category_dict,subcategory_dict,word_dict)
-    title_word_embedding_matrix, have_word = load_matrix(embedding_path,word_dict)
+    news,news_index,word_dict = read_news(root_data_path, ['train','val'])
+    news_title = get_doc_input(news, news_index, word_dict)
+    title_word_embedding_matrix, have_word = load_matrix(embedding_path, word_dict)
     train_session, train_uid_click, train_uid_table = read_clickhistory(root_data_path,'train')
-    test_session, test_uid_click,test_uid_table = read_clickhistory(root_data_path,'val')
-    train_user = parse_user(train_session,news_index)
-    test_user = parse_user(test_session,news_index)
-    train_sess, train_user_id, train_label, train_user_id_sample = get_train_input(train_session,train_uid_click,news_index)
-    test_impressions, test_userids = get_test_input(test_session,news_index)
-    get_user_data = GetUserDataFunc(news_title,train_user_id_sample,train_user,train_sess,train_label,train_user_id)
+    test_session, test_uid_click, test_uid_table = read_clickhistory(root_data_path,'val')
+    train_user = parse_user(train_session, news_index)
+    test_user = parse_user(test_session, news_index)
+    train_sess, train_user_id, train_label, train_user_id_sample = get_train_input(train_session, train_uid_click, news_index)
+    test_impressions, test_userids = get_test_input(test_session, news_index)
+    get_user_data = GetUserDataFunc(news_title, train_user_id_sample, train_user, train_sess, train_label, train_user_id)
 
     model = FedNewsRec(title_word_embedding_matrix).cuda(args.device)
     model_size = reduce(lambda a, b: a + np.prod(list(b.size())), model.state_dict().values(), 0)
@@ -98,7 +98,7 @@ def main(args):
                 assert args.quantize_scale != -1., 'As skellam mechanism is enabled, `quantize_scale` is required.'
                 assert args.bitwidth != -1, 'As skellam mechanism is enabled, `bitwidth` is required.'
                 update_l2_norm = torch.sqrt(reduce(lambda a, b: a + torch.square(torch.norm(b, p=2)), update.values(), 0.))
-                # print("Update norm:", update_norm)
+                # print("Update norm:", update_l2_norm)
                 if update_l2_norm > args.clip_l2_norm:
                     update = {layer: args.clip_l2_norm / update_l2_norm * update[layer] for layer in update}
                 # print("Update after clipping:", update['doc_encoder.phase1.2.weight'])

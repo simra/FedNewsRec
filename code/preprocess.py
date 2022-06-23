@@ -39,8 +39,6 @@ def newsample(nnn,ratio):
 
 def read_news(root_data_path,modes):
     news={}
-    category=[]
-    subcategory=[]
     news_index={}
     index=1
     word_dict={}
@@ -51,49 +49,31 @@ def read_news(root_data_path,modes):
             lines = f.readlines()
         for line in lines:
             splited = line.strip('\n').split('\t')
-            doc_id,vert,subvert,title= splited[0:4]
+            doc_id,_,_,title= splited[0:4]
             if doc_id in news_index:
                 continue
             news_index[doc_id]=index
             index+=1
-            category.append(vert)
-            subcategory.append(subvert)
             title = title.lower()
-            title=word_tokenize(title)
-            news[doc_id]=[vert,subvert,title]
+            title = word_tokenize(title)
+            news[doc_id] = title
             for word in title:
                 word = word.lower()
                 if not(word in word_dict):
-                    word_dict[word]=word_index
-                    word_index+=1
-    category=list(set(category))
-    subcategory=list(set(subcategory))
-    category_dict={}
-    index=1
-    for c in category:
-        category_dict[c]=index
-        index+=1
-    subcategory_dict={}
-    index=1
-    for c in subcategory:
-        subcategory_dict[c]=index
-        index+=1
-    return news,news_index,category_dict,subcategory_dict,word_dict
+                    word_dict[word] = word_index
+                    word_index += 1
+    return news,news_index,word_dict
 
-def get_doc_input(news,news_index,category,subcategory,word_dict):
+def get_doc_input(news,news_index,word_dict):
     news_num=len(news)+1
     news_title=np.zeros((news_num,MAX_SENTENCE),dtype='int32')
-    news_vert=np.zeros((news_num,),dtype='int32')
-    news_subvert=np.zeros((news_num,),dtype='int32')
     for key in news:    
-        vert,subvert,title=news[key]
+        title=news[key]
         doc_index=news_index[key]
-        news_vert[doc_index]=category[vert]
-        news_subvert[doc_index]=subcategory[subvert]
         for word_id in range(min(MAX_SENTENCE,len(title))):
             news_title[doc_index,word_id]=word_dict[title[word_id].lower()]
         
-    return news_title,news_vert,news_subvert
+    return news_title
 
 
 def load_matrix(embedding_path,word_dict):
