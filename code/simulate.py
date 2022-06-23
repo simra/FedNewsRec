@@ -19,6 +19,7 @@ from ray.tune.trial import Trial
 from prv_accountant import Accountant
 from functools import reduce
 from copy import deepcopy
+from accountant import skellam_epsilon
 
 #@ray.remote(num_gpus=1)
 def main(args):
@@ -38,6 +39,7 @@ def main(args):
     get_user_data = GetUserDataFunc(news_title,train_user_id_sample,train_user,train_sess,train_label,train_user_id)
 
     model = FedNewsRec(title_word_embedding_matrix).cuda(args.device)
+    model_size = reduce(lambda a, b: a + np.prod(list(b.size())), model.state_dict().values(), 0)
     optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.lmb)
     criterion = nn.CrossEntropyLoss()
 
@@ -58,15 +60,6 @@ def main(args):
 
     metrics_keys = ['auc', 'mrr', 'ndcg@5', 'ndcg@10']
     metrics = dict(zip(metrics_keys, [0,0,0,0]))
-    # TODO: we need to change 50000 to an input argument
-    if args.noise_multiplier > 0.:
-        accountant = Accountant(
-                noise_multiplier=args.noise_multiplier,
-                sampling_probability=args.perround/50000,
-                delta=args.delta,
-                eps_error=0.1,
-                max_compositions=50000
-        )
     for ridx in range(args.rounds):
         random_index = np.random.permutation(len(train_uid_table))[:args.perround]
         pretrained_dict = deepcopy(model.state_dict())
@@ -99,21 +92,23 @@ def main(args):
                 torch.cuda.empty_cache()
 
             update = {layer: model.state_dict()[layer] - pretrained_dict[layer] for layer in pretrained_dict}
-            if args.clip_norm != float('inf'):
-                update_norm = torch.sqrt(reduce(lambda a, b: a + torch.square(torch.norm(b, p=2)), update.values(), 0.))
+            # print("Update before skellam:", update['doc_encoder.phase1.2.weight'])
+            if args.noise_multiplier > 0.:
+                assert args.clip_l2_norm != float('inf'), 'As skellam mechanism is enabled, `clip_l2_norm` is required.'
+                assert args.quantize_scale != -1., 'As skellam mechanism is enabled, `quantize_scale` is required.'
+                assert args.bitwidth != -1, 'As skellam mechanism is enabled, `bitwidth` is required.'
+                update_l2_norm = torch.sqrt(reduce(lambda a, b: a + torch.square(torch.norm(b, p=2)), update.values(), 0.))
                 # print("Update norm:", update_norm)
-                if update_norm > args.clip_norm:
-                    scale = args.clip_norm / update_norm
-                    update = {layer: scale * update[layer] for layer in update}
-            if args.quantize_scale != -1.:
-                update = {layer: torch.round(args.quantize_scale * update[layer]) for layer in update}
-            # TODO: add noise
-            if args.noise_multiplier != -1.:
-                raise NotImplementedError('Add skellam mechanism here')
-            # TODO: modular clipping
-            if args.bitwidth != -1:
-                # TODO: we need to translate this to the positive half axis
-                update = {layer: (torch.remainder(update[layer] + 2**(args.bandwidth-1), 2**args.bitwidth) - 2**(args.bandwidth-1)) / args.quantize_scale for layer in update} 
+                if update_l2_norm > args.clip_l2_norm:
+                    update = {layer: args.clip_l2_norm / update_l2_norm * update[layer] for layer in update}
+                # print("Update after clipping:", update['doc_encoder.phase1.2.weight'])
+                update = {layer: torch.round(args.quantize_scale * update[layer]).long() for layer in update}
+                # print("Update after quantization:", update['doc_encoder.phase1.2.weight'])
+                poisson_rate = 2. * (args.noise_multiplier * args.clip_l2_norm)**2
+                update = {layer: (update[layer] + torch.poisson(poisson_rate * torch.ones_like(update[layer])) - torch.poisson(poisson_rate * torch.ones_like(update[layer]))).long() for layer in update}
+                # print("Update after noise:", update['doc_encoder.phase1.2.weight'])
+                update = {layer: (torch.remainder(update[layer] + 2**(args.bitwidth-1), 2**args.bitwidth) - 2**(args.bitwidth-1)) / args.quantize_scale for layer in update} 
+                # print("Update after skellam", update['doc_encoder.phase1.2.weight'])
             if running_average is None:
                 running_average = {layer: update[layer] / args.perround for layer in update}
             else:
@@ -123,16 +118,6 @@ def main(args):
             del click, sample, label
             torch.cuda.empty_cache()
 
-        """
-        if args.clip_norm != float('inf'):
-            update_norm = torch.sqrt(reduce(lambda a, b: a + torch.square(torch.norm(b, p=2)), running_average.values(), 0.))
-            print("Update norm:", update_norm)
-            if update_norm > args.clip_norm:
-                scale = args.clip_norm / update_norm
-                running_average = {layer: scale * running_average[layer] for layer in running_average}
-        if args.noise_multiplier > 0:
-            running_average = {layer: running_average[layer] + torch.normal(mean=torch.zeros_like(running_average[layer]), std=args.noise_multiplier*args.clip_norm*torch.ones_like(running_average[layer])) for layer in running_average}
-        """
         updated_dict = {layer: pretrained_dict[layer] + running_average[layer] for layer in running_average}
         model.load_state_dict(updated_dict)
         
@@ -141,8 +126,16 @@ def main(args):
 
         print("Round:", ridx+1, "Loss:", total_loss / args.localiters / args.perround)
         if args.noise_multiplier > 0.:
-            eps_low, eps_estimate, eps_upper = accountant.compute_epsilon(num_compositions=ridx+1)
-            print("Epsilon:", eps_estimate)
+            eps = skellam_epsilon(scale = args.quantize_scale, 
+                            central_stddev = 2 * np.sqrt(args.perround) * args.noise_multiplier * args.clip_l2_norm,
+                            l2_sens = 2 * args.clip_l2_norm,
+                            beta = 0.,
+                            dim = model_size,
+                            q = args.perround / 50000,
+                            steps = ridx+1,
+                            delta = args.delta
+            )
+            print("Epsilon:", eps)
         sys.stdout.flush()
         
         if (ridx + 1) % args.checkpoint == 0:
@@ -177,7 +170,19 @@ def main(args):
                 print()
                 metrics_out = [np.mean(AUC), np.mean(MRR), np.mean(nDCG5), np.mean(nDCG10)]                
                 metric_str = '\t'.join(map(str,metrics_out))
-                out_str = f"{(ridx+1)*args.perround}\t{metric_str}\t{total_loss / args.localiters / args.perround}"
+                if args.noise_multiplier > 0.:
+                    eps = skellam_epsilon(scale = args.quantize_scale,
+                                    central_stddev = 2 * np.sqrt(args.perround) * args.noise_multiplier * args.clip_l2_norm,
+                                    l2_sens = 2 * args.clip_l2_norm,
+                            	    beta = 0.,
+                            	    dim = model_size,
+                            	    q = args.perround / 50000,
+                            	    steps = ridx+1,
+                            	    delta = args.delta
+                    )
+                    out_str = f"{(ridx+1)*args.perround}\t{eps}\t{metric_str}\t{total_loss / args.localiters / args.perround}"
+                else:
+                    out_str = f"{(ridx+1)*args.perround}\t{metric_str}\t{total_loss / args.localiters / args.perround}"
                 print(out_str)
                 with open(metrics_fn, 'a', encoding='utf-8') as f:
                     f.write(out_str+"\n")
@@ -218,8 +223,8 @@ if __name__ == '__main__':
     parser.add_argument('--output_path', default='.')
     parser.add_argument('--sweep', required=False, help='path to ray sweep config')
     parser.add_argument('--metrics_format', default='date', choices=['date', 'config'], help='whether for format the metrics filename by date or configuration')
-    parser.add_argument('--noise_multiplier', type=float, default=0., help='local noise multiplier')
-    parser.add_argument('--clip_norm', type=float, default=float('inf'), help='L2 clip norm for distributed DP mechanism')
+    parser.add_argument('--noise_multiplier', type=float, default=0., help='local noise multiplier, main power switch for DP.')
+    parser.add_argument('--clip_l2_norm', type=float, default=float('inf'), help='L2 clip norm for distributed DP mechanism')
     parser.add_argument('--delta', type=float, default=1e-3, help='delta in (eps, delta)-DP')
     parser.add_argument('--quantize_scale', type=float, default=-1., help='quantize_scale in secure aggregation')
     parser.add_argument('--bitwidth', type=int, default=-1, help='bitwidth to transmit the local updates')
