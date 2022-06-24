@@ -40,6 +40,7 @@ def main(args):
     model = FedNewsRec(title_word_embedding_matrix).cuda(args.device)
     optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.lmb)
     criterion = nn.CrossEntropyLoss()
+    scheduler = lr_scheduler.StepLR(optimizer, step_size=20, gamma=args.gamma)
 
     print('Using GPU:', torch.cuda.is_available(), torch.cuda.current_device())
     os.makedirs(args.output_path, exist_ok=True)
@@ -138,6 +139,8 @@ def main(args):
         
         del pretrained_dict, running_average
         torch.cuda.empty_cache()
+        # update the learning rate
+        scheduler.step()
 
         print("Round:", ridx+1, "Loss:", total_loss / args.localiters / args.perround)
         if args.noise_multiplier > 0.:
