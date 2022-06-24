@@ -29,7 +29,7 @@ def main(args):
 
     news,news_index,word_dict = read_news(root_data_path, ['train','val'])
     news_title = get_doc_input(news, news_index, word_dict)
-    title_word_embedding_matrix, have_word = load_matrix(embedding_path, word_dict)
+    title_word_embedding_matrix = load_matrix(embedding_path, word_dict)
     train_session, train_uid_click, train_uid_table = read_clickhistory(root_data_path,'train')
     test_session, test_uid_click, test_uid_table = read_clickhistory(root_data_path,'val')
     train_user = parse_user(train_session, news_index)
