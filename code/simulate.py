@@ -57,7 +57,7 @@ def main(args):
     for j in range(len(news_title)):
         doc_cache.append(torch.from_numpy(np.array([news_title[j]])))
 
-    metrics_keys = ['total_clients', 'auc', 'mrr', 'ndcg@5', 'ndcg@10']
+    metrics_keys = ['total_clients', 'auc', 'eps', 'mrr', 'ndcg@5', 'ndcg@10']
     metrics = dict(zip(metrics_keys, [0, 0, 0, 0, 0]))
     # TODO: we need to change 50000 to an input argument
     if args.noise_multiplier > 0.:
@@ -100,7 +100,7 @@ def main(args):
                 torch.cuda.empty_cache()
 
             update = {layer: model.state_dict()[layer] - pretrained_dict[layer] for layer in pretrained_dict}
-            if args.clip_norm != float('inf'):
+            if args.clip_norm != float('inf') and args.clip_norm > 0.0:
                 update_norm = torch.sqrt(reduce(lambda a, b: a + torch.square(torch.norm(b, p=2)), update.values(), 0.))
                 # print("Update norm:", update_norm)
                 if update_norm > args.clip_norm:
@@ -179,7 +179,7 @@ def main(args):
                     nDCG10.append(ndcg10)
                 print()
                 total_clients = (ridx+1)*args.perround
-                metrics_out = [total_clients, np.mean(AUC), np.mean(MRR), np.mean(nDCG5), np.mean(nDCG10)]                
+                metrics_out = [total_clients, np.mean(AUC), eps_estimate, np.mean(MRR), np.mean(nDCG5), np.mean(nDCG10)]                
                 metric_str = '\t'.join(map(str,metrics_out))
                 out_str = f"{total_clients}\t{metric_str}\t{total_loss / args.localiters / args.perround}"
                 print(out_str)
