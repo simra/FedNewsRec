@@ -16,7 +16,8 @@ import ray
 from ray import tune
 from ray.tune import CLIReporter
 from ray.tune.trial import Trial
-from prv_accountant import Accountant
+# from prv_accountant import Accountant
+import privacy
 from functools import reduce
 from copy import deepcopy
 
@@ -47,7 +48,7 @@ def main(args):
     if args.metrics_format == 'date':
         metrics_fn = os.path.join(args.output_path, f'metrics_{datetime.now().strftime("%y%m%d%H%M%S")}.tsv')
     else:
-        metrics_fn = os.path.join(args.output_path, f'metrics_{args.lr}_{args.gamma}_{args.lmb}_{args.perround}_{args.rounds}.tsv')
+        metrics_fn = os.path.join(args.output_path, f'metrics_{args.lr}_{args.gamma}_{args.lmb}_{args.delta}_{args.noise_multiplier}_{args.clip_norm}_{args.perround}_{args.rounds}.tsv')
     with open(metrics_fn, 'w', encoding='utf-8') as f:
         f.write(json.dumps(vars(args))+'\n')
 
@@ -59,15 +60,29 @@ def main(args):
 
     metrics_keys = ['total_clients', 'auc', 'eps', 'mrr', 'ndcg@5', 'ndcg@10']
     metrics = dict(zip(metrics_keys, [0, 0, 0, 0, 0]))
+    
+    # verify we have a valid configuration. Return empty metrics if we don't
+    if (args.noise_multiplier > 0. or args.clip_norm > 0. or args.delta > 0.) and (args.clip_norm <= 0. or args.noise_multiplier <= 0. or args.delta <= 0.):
+        print("Error: invalid DP configuration. Bailing.")
+        return metrics
+
+
     # TODO: we need to change 50000 to an input argument
-    if args.noise_multiplier > 0.:
-        accountant = Accountant(
-                noise_multiplier=args.noise_multiplier,
-                sampling_probability=args.perround/50000,
-                delta=args.delta,
-                eps_error=0.1,
-                max_compositions=50000
-        )
+    """
+    accountant = None
+    if args.noise_multiplier > 0. and args.clip_norm > 0.:
+        try:
+            accountant = Accountant(
+                    noise_multiplier=args.noise_multiplier,
+                    sampling_probability=args.perround/50000,
+                    delta=args.delta,
+                    eps_error=0.1,
+                    max_compositions=args.rounds*args.perround  # TODO: verify this is the right argument. Or should it just be args.rounds?
+            )
+        except:
+            print('Warning: failed to create accountant')
+    """
+
     for ridx in range(args.rounds):
         random_index = np.random.permutation(len(train_uid_table))[:args.perround]
         pretrained_dict = deepcopy(model.state_dict())
@@ -110,7 +125,9 @@ def main(args):
                 update = {layer: torch.round(args.quantize_scale * update[layer]) for layer in update}
             # TODO: add noise
             if args.noise_multiplier != -1.:
-                raise NotImplementedError('Add skellam mechanism here')
+                # raise NotImplementedError('Add skellam mechanism here')
+                # Instead we will do global DP
+                pass
             # TODO: modular clipping
             if args.bitwidth != -1:
                 # TODO: we need to translate this to the positive half axis
@@ -124,6 +141,7 @@ def main(args):
             del click, sample, label
             torch.cuda.empty_cache()
 
+        # We do local clipping for each client, but we'll add noise globally
         """
         if args.clip_norm != float('inf'):
             update_norm = torch.sqrt(reduce(lambda a, b: a + torch.square(torch.norm(b, p=2)), running_average.values(), 0.))
@@ -131,9 +149,10 @@ def main(args):
             if update_norm > args.clip_norm:
                 scale = args.clip_norm / update_norm
                 running_average = {layer: scale * running_average[layer] for layer in running_average}
-        if args.noise_multiplier > 0:
-            running_average = {layer: running_average[layer] + torch.normal(mean=torch.zeros_like(running_average[layer]), std=args.noise_multiplier*args.clip_norm*torch.ones_like(running_average[layer])) for layer in running_average}
         """
+        if args.noise_multiplier > 0 and args.clip_norm > 0:
+            running_average = {layer: running_average[layer] + torch.normal(mean=torch.zeros_like(running_average[layer]), std=args.noise_multiplier*args.clip_norm*torch.ones_like(running_average[layer])) for layer in running_average}
+        
         updated_dict = {layer: pretrained_dict[layer] + running_average[layer] for layer in running_average}
         model.load_state_dict(updated_dict)
         
@@ -143,9 +162,23 @@ def main(args):
         scheduler.step()
 
         print("Round:", ridx+1, "Loss:", total_loss / args.localiters / args.perround)
-        if args.noise_multiplier > 0.:
-            eps_low, eps_estimate, eps_upper = accountant.compute_epsilon(num_compositions=ridx+1)
-            print("Epsilon:", eps_estimate)
+        eps_estimate = np.inf
+        if args.noise_multiplier > 0. and args.clip_norm > 0.:            
+            eps_estimate = privacy.update_privacy_accountant(args.noise_multiplier, args.clip_norm, args.delta,
+                                                             num_clients=len(train_uid_table), curr_iter=ridx, 
+                                                             num_clients_curr_iter=args.perround)
+            """
+            if accountant is None:
+                # the accountant was unsuccessfully generated
+                eps_estimate = np.nan
+            else:
+                try:                
+                    eps_low, eps_estimate, eps_upper = accountant.compute_epsilon(num_compositions=ridx+1)
+                    print("Epsilon:", eps_estimate)
+                except:
+                    print('Warning: accountant failed')
+                    eps_estimate = np.nan
+            """
         sys.stdout.flush()
         
         if (ridx + 1) % args.checkpoint == 0:
