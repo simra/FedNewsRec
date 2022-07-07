@@ -17,13 +17,13 @@ def update_privacy_accountant(noise_multiplier, clip_norm, delta, num_clients, c
     
     global_sigma = noise_multiplier
     # TODO: this looks like LDP noise scale. Check that the GDP noise we apply is global_sigma*clip_norm
-    noise_scale = global_sigma * clip_norm / B
+    #noise_scale = global_sigma * clip_norm / B
 
-    try:
-        mu = K * B / n * sqrt(T * exp((1. / global_sigma) ** 2 - 1))
-    except OverflowError:
-        print(f"Error computing mu {global_sigma} {K} {B} {n} {T}")
-        mu = -1
+    #try:
+    #    mu = K * B / n * sqrt(T * exp((1. / global_sigma) ** 2 - 1))
+    #except OverflowError:
+    #    print(f"Error computing mu {global_sigma} {K} {B} {n} {T}")
+    #    mu = -1
 
     orders = ([1.25, 1.5, 1.75, 2., 2.25, 2.5, 3., 3.5, 4., 4.5] + list(range(5, 64)) + [128, 256, 512])
     q = B / n

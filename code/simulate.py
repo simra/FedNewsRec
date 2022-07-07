@@ -85,11 +85,16 @@ def main(args):
 
     for ridx in range(args.rounds):
         random_index = np.random.permutation(len(train_uid_table))[:args.perround]
-        pretrained_dict = deepcopy(model.state_dict())
+        pretrained_dict = {name: p.clone().detach() for name, p in model.named_parameters() } # deepcopy(model.state_dict())
         running_average = None
+        b_sum = 0. # adaptive clipping count of clients less than the norm
+        nu_c = 1.  # adaptive clipping learning rate
+        sigma_b = 0.01  # DP noise to add to estimated fraction of clients not clipped
+
         total_loss = 0.
 
-        model.train()        
+        model.train()
+        requires_dp_noise = { layer: p.requires_grad for layer, p in model.named_parameters()}                
         for uidx in random_index:
             uid = train_uid_table[uidx]
             click, sample, label = get_user_data(uid)
@@ -109,18 +114,24 @@ def main(args):
                             print('other model output:', model(click, sample)[0].detach().cpu().numpy())                                        
                     return metrics
                 loss.backward()
+                
                 optimizer.step()
                 optimizer.zero_grad()
                 del output
                 torch.cuda.empty_cache()
 
             update = {layer: model.state_dict()[layer] - pretrained_dict[layer] for layer in pretrained_dict}
-            if args.clip_norm != float('inf') and args.clip_norm > 0.0:
+            
+            #sparseness = {layer: (requires_dp_noise.get(layer, "Unknown"), float(torch.count_nonzero(update[layer]).cpu().item())/torch.numel(update[layer])) for layer in update}
+            #print(json.dumps(sparseness, indent=3))
+            if args.clip_norm > 0.0:
                 update_norm = torch.sqrt(reduce(lambda a, b: a + torch.square(torch.norm(b, p=2)), update.values(), 0.))
                 # print("Update norm:", update_norm)
                 if update_norm > args.clip_norm:
                     scale = args.clip_norm / update_norm
                     update = {layer: scale * update[layer] for layer in update}
+                else:
+                    b_sum += 1
             if args.quantize_scale != -1.:
                 update = {layer: torch.round(args.quantize_scale * update[layer]) for layer in update}
             # TODO: add noise
@@ -136,7 +147,7 @@ def main(args):
                 running_average = {layer: update[layer] / args.perround for layer in update}
             else:
                 running_average = {layer: running_average[layer] + update[layer] / args.perround for layer in update}
-            model.load_state_dict(pretrained_dict)
+            model.load_state_dict(pretrained_dict, strict=False)
 
             del click, sample, label
             torch.cuda.empty_cache()
@@ -151,10 +162,13 @@ def main(args):
                 running_average = {layer: scale * running_average[layer] for layer in running_average}
         """
         if args.noise_multiplier > 0 and args.clip_norm > 0:
-            running_average = {layer: running_average[layer] + torch.normal(mean=torch.zeros_like(running_average[layer]), std=args.noise_multiplier*args.clip_norm*torch.ones_like(running_average[layer])) for layer in running_average}
+            running_average = {layer: (running_average[layer] 
+                                       + torch.normal(mean=torch.zeros_like(running_average[layer]), std=args.noise_multiplier*args.clip_norm*torch.ones_like(running_average[layer]))
+                                       ) if requires_dp_noise.get(layer, True)
+                                       else running_average[layer] for layer in running_average}
         
         updated_dict = {layer: pretrained_dict[layer] + running_average[layer] for layer in running_average}
-        model.load_state_dict(updated_dict)
+        model.load_state_dict(updated_dict, strict=False)
         
         del pretrained_dict, running_average
         torch.cuda.empty_cache()
@@ -167,6 +181,13 @@ def main(args):
             eps_estimate = privacy.update_privacy_accountant(args.noise_multiplier, args.clip_norm, args.delta,
                                                              num_clients=len(train_uid_table), curr_iter=ridx, 
                                                              num_clients_curr_iter=args.perround)
+        
+        if args.adaptive_clip_gamma > 0.:
+            b_sum = (b_sum + np.random.normal(0.0, sigma_b))/args.perround
+            # old_clip_norm = args.clip_norm
+            args.clip_norm = args.clip_norm * np.exp(-nu_c*(b_sum-args.adaptive_clip_gamma))
+            # print(old_clip_norm, args.clip_norm, b_sum, b_sum-args.adaptive_clip_gamma)
+        
             """
             if accountant is None:
                 # the accountant was unsuccessfully generated
@@ -257,10 +278,11 @@ if __name__ == '__main__':
     parser.add_argument('--sweep', required=False, help='path to ray sweep config')
     parser.add_argument('--metrics_format', default='date', choices=['date', 'config'], help='whether for format the metrics filename by date or configuration')
     parser.add_argument('--noise_multiplier', type=float, default=0., help='local noise multiplier')
-    parser.add_argument('--clip_norm', type=float, default=float('inf'), help='L2 clip norm for distributed DP mechanism')
-    parser.add_argument('--delta', type=float, default=1e-3, help='delta in (eps, delta)-DP')
+    parser.add_argument('--clip_norm', type=float, default=-1.0, help='L2 clip norm for distributed DP mechanism')
+    parser.add_argument('--delta', type=float, default=-1.0, help='delta in (eps, delta)-DP')
     parser.add_argument('--quantize_scale', type=float, default=-1., help='quantize_scale in secure aggregation')
     parser.add_argument('--bitwidth', type=int, default=-1, help='bitwidth to transmit the local updates')
+    parser.add_argument('--adaptive_clip_gamma', type=float, default=-1, help='target quantile for adaptive clipping (-1 to disable)')
     args = parser.parse_args()
 
     # assert (quantize_scale == -1.) != (bitwidth == -1), 'quantize_scale and bitwidth must both be -1 or not -1 simultaneously to guarantee correctness.'
