@@ -59,7 +59,7 @@ def main(args):
         doc_cache.append(torch.from_numpy(np.array([news_title[j]])))
 
     metrics_keys = ['total_clients', 'auc', 'eps', 'mrr', 'ndcg@5', 'ndcg@10']
-    metrics = dict(zip(metrics_keys, [0, 0, 0, 0, 0]))
+    metrics = dict(zip(metrics_keys, [0]*len(metrics_keys)))
     
     # verify we have a valid configuration. Return empty metrics if we don't
     if (args.noise_multiplier > 0. or args.clip_norm > 0. or args.delta > 0.) and (args.clip_norm <= 0. or args.noise_multiplier <= 0. or args.delta <= 0.):
