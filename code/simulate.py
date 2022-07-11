@@ -106,7 +106,7 @@ def main(args):
                 output, _ = model(click, sample)
                 loss = criterion(output, label)
                 total_loss += loss.item()
-                if total_loss / args.localiters / args.perround > 1e6:
+                if total_loss / args.localiters / args.perround > args.divergence_threshold:
                     model.eval()               
                     with torch.no_grad():
                         print('model output:', output.detach().cpu().numpy(), label.detach().cpu().numpy())
@@ -182,7 +182,7 @@ def main(args):
                                                              num_clients=len(train_uid_table), curr_iter=ridx, 
                                                              num_clients_curr_iter=args.perround)
         
-        if args.adaptive_clip_gamma > 0.:
+        if args.adaptive_clip_gamma >= 0.:
             b_sum = (b_sum + np.random.normal(0.0, sigma_b))/args.perround
             # old_clip_norm = args.clip_norm
             args.clip_norm = args.clip_norm * np.exp(-nu_c*(b_sum-args.adaptive_clip_gamma))
@@ -283,6 +283,7 @@ if __name__ == '__main__':
     parser.add_argument('--quantize_scale', type=float, default=-1., help='quantize_scale in secure aggregation')
     parser.add_argument('--bitwidth', type=int, default=-1, help='bitwidth to transmit the local updates')
     parser.add_argument('--adaptive_clip_gamma', type=float, default=-1, help='target quantile for adaptive clipping (-1 to disable)')
+    parser.add_argument('--divergence_threshold', type=float, default=100, help='loss threshold for when to bail on training')
     args = parser.parse_args()
 
     # assert (quantize_scale == -1.) != (bitwidth == -1), 'quantize_scale and bitwidth must both be -1 or not -1 simultaneously to guarantee correctness.'
