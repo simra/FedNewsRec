@@ -92,6 +92,7 @@ def main(args):
         sigma_b = 0.01  # DP noise to add to estimated fraction of clients not clipped
 
         total_loss = 0.
+        total_weight = 0.
 
         model.train()
         requires_dp_noise = { layer: p.requires_grad for layer, p in model.named_parameters()}                
@@ -101,11 +102,13 @@ def main(args):
             click = torch.from_numpy(click).cuda(args.device)
             sample = torch.from_numpy(sample).cuda(args.device)
             label = torch.from_numpy(label).cuda(args.device)
+            client_loss = 0
 
             for itr in range(args.localiters):
                 output, _ = model(click, sample)
                 loss = criterion(output, label)
                 total_loss += loss.item()
+                client_loss += loss.item()
                 if total_loss / args.localiters / args.perround > args.divergence_threshold:
                     model.eval()               
                     with torch.no_grad():
@@ -122,6 +125,13 @@ def main(args):
 
             update = {layer: model.state_dict()[layer] - pretrained_dict[layer] for layer in pretrained_dict}
             
+            if args.agg_method == 'dga':
+                weight = 1.0/(1.0+np.exp(client_loss))
+                update = {layer: update[layer] * weight for layer in update }    
+                total_weight += weight
+            else:
+                total_weight += 1
+
             #sparseness = {layer: (requires_dp_noise.get(layer, "Unknown"), float(torch.count_nonzero(update[layer]).cpu().item())/torch.numel(update[layer])) for layer in update}
             #print(json.dumps(sparseness, indent=3))
             if args.clip_norm > 0.0:
@@ -242,6 +252,7 @@ def main(args):
                 metrics_out = dict(zip(metrics_keys,metrics_out))
                 if metrics_out['auc']>metrics['auc']:
                     metrics = metrics_out
+                    print('New best: {}'.format(metrics))
     return metrics
 
 def ray_helper(args):
@@ -277,6 +288,7 @@ if __name__ == '__main__':
     parser.add_argument('--output_path', default='.')
     parser.add_argument('--sweep', required=False, help='path to ray sweep config')
     parser.add_argument('--metrics_format', default='date', choices=['date', 'config'], help='whether for format the metrics filename by date or configuration')
+    parser.add_argument('--agg_method', default='fedavg', choice=['fedavg', 'dga'])
     parser.add_argument('--noise_multiplier', type=float, default=0., help='local noise multiplier')
     parser.add_argument('--clip_norm', type=float, default=-1.0, help='L2 clip norm for distributed DP mechanism')
     parser.add_argument('--delta', type=float, default=-1.0, help='delta in (eps, delta)-DP')
