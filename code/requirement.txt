@@ -5,3 +5,4 @@ nltk
 torch
 tqdm
 pandas
+prv_accountant
